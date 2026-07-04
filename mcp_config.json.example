@@ -1,0 +1,11 @@
+{
+  "weather": {
+    "command": "python",
+    "args": ["-m", "mcp_server_weather"],
+    "transport": "stdio"
+  },
+  "search": {
+    "url": "https://mcp.example.com/sse",
+    "transport": "sse"
+  }
+}

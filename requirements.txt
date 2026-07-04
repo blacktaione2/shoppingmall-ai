@@ -1,0 +1,69 @@
+# Python 3.11 기준 (3.11 미만 설치 금지)
+fastapi==0.115.8
+uvicorn==0.34.0
+oracledb==2.5.1
+chromadb==0.6.3
+# openai 버전은 langchain-openai==1.3.3 이 요구하는 범위(>=2.26.0,<3.0.0)로 자동 결정
+# 직접 핀 고정 시 충돌 발생 → langchain-openai 의존성에 위임
+# openai==1.61.0
+python-dotenv==1.0.1
+python-multipart==0.0.20   # [PHASE 1-③] 음성 파일(multipart/form-data) 업로드용
+
+# [LangGraph 전환] PHASE 1-① 추가 의존성
+# 인스턴스 2 배포 시 아래 3개를 함께 설치할 것:
+#   pip install langgraph==1.2.6 langchain-core==1.4.8 langchain-openai==1.3.3
+# 주의: langchain-openai 는 내부적으로 openai SDK 를 사용하므로
+#       기존 openai==1.61.0 과의 호환을 배포 환경에서 1회 확인할 것
+#       (충돌 시 openai 핀을 langchain-openai 가 요구하는 범위로 상향).
+langgraph==1.2.6
+langchain-core==1.4.8
+langchain-openai==1.3.3
+
+# [PHASE 3-①] Redis 체크포인터 (영속 멀티턴 메모리) — 선택 설치
+# REDIS_URL 을 .env 에 설정해 Redis 영속화를 쓸 때만 필요.
+# REDIS_URL 이 비어 있으면 MemorySaver 폴백이라 설치 불필요(기존 동작 유지).
+#   pip install langgraph-checkpoint-redis==0.5.0
+# 호환 확인: langgraph==1.2.6 + langchain-core==1.4.8 과 충돌 없음(검증 완료).
+#   추가로 끌려오는 의존성: redis>=5.2.1, redisvl>=0.15, orjson, ormsgpack 등.
+# langgraph-checkpoint-redis==0.5.0
+
+# [PHASE 1-⑦] 멀티 모델 추상화 (선택 설치)
+# LLM_PROVIDER 를 gemini/anthropic 으로 쓸 때만 필요. openai 만 쓰면 설치 불필요.
+#   pip install langchain-google-genai==4.2.6 langchain-anthropic==1.4.7
+# langchain-google-genai==4.2.6
+# langchain-anthropic==1.4.7
+
+# [PHASE 3] DeepSeek 신규 provider 추가
+# deepseek-v4-flash (tool calling + structured output 지원, $0.14/$0.28 per 1M)
+# 공식 LangChain DeepSeek 패키지 사용 (ChatOpenAI + base_url 방식보다 권장)
+# pip install langchain-deepseek
+# langchain-deepseek
+
+# [PHASE 1-⑧] RAG 재랭킹 (선택 설치)
+# RERANK_ENABLED=true 이고 RERANK_PROVIDER=cohere 일 때만 필요.
+#   pip install cohere
+# cohere>=5.0.0
+
+# [PHASE 1-⑨] MCP 외부 서비스 연동 (선택 설치)
+# MCP_ENABLED=true 일 때만 필요. mcp_config.json 에 신뢰 가능한 서버만 등록할 것.
+#   pip install langchain-mcp-adapters
+# langchain-mcp-adapters>=0.1.0
+
+# [PHASE 2-①] 멀티모달 (OpenCLIP Dual Indexing) — 선택 설치
+# 이미지 인덱싱(scripts/index_products_image.py) 또는 CLIP_SERVING_ENABLED=true 일 때만 필요.
+# 텍스트 검색만 쓰는 서빙 인스턴스에는 설치하지 않아도 된다(메모리 보호).
+#   pip install open_clip_torch torch pillow
+# 주의: torch 는 용량이 크다. 인덱싱은 가급적 메모리 여유 머신에서 실행할 것.
+# open_clip_torch>=2.24.0
+# torch>=2.2.0
+# pillow>=10.0.0
+
+# [추가] RAGAs RAG 정량 평가 (오프라인 평가 전용 — 서버 런타임에는 불필요)
+# scripts/evaluate_rag.py 실행 시에만 필요. 운영 FastAPI/그래프와 무관.
+#   pip install ragas datasets
+# ragas
+# datasets
+
+# [하이브리드 검색] BM25 Sparse 후보 (순수 Python, torch 불필요)
+# BM25_ENABLED=true 일 때 사용. false(기본)면 import 되지 않음.
+rank_bm25==0.2.2

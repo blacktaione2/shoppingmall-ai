@@ -1,0 +1,13 @@
+{
+  "name": "shoppingmall-ai-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "프론트엔드 JS 테스트용 (chat-common.js / chatbot.js 검증). 실행 전 npm install 필요.",
+  "scripts": {
+    "test:common": "node tests/test_chat_common.js",
+    "test:jsdom": "node tests/jsdom_chatbot_test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

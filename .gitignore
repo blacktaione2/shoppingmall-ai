@@ -1,0 +1,32 @@
+# ── 환경/비밀 (절대 커밋 금지) ─────────────────────────────
+.env
+*.env
+!.env.example
+oracle/wallet/
+*.pem
+*.p12
+
+# ── 측정/로그 산출물 ───────────────────────────────────────
+metrics.jsonl
+*.log
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ── ChromaDB 로컬 데이터 ───────────────────────────────────
+chroma_data/
+
+# ── OS/IDE ────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+
+# ── 측정 킷 산출물 (스크립트 실행 시 매번 생성됨) ───────────
+benchmark_results_*.jsonl
+ragas_result.json
+judged_*.jsonl
