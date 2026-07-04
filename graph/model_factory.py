@@ -11,7 +11,7 @@ graph/model_factory.py
 
 [provider × 역할 → 실제 모델명] (2026-06 기준, .env 로 오버라이드 가능)
   openai    : main=gpt-5.4              intent=gpt-5.4-mini
-  gemini    : main=gemini-3.1-flash     intent=gemini-3.1-flash   ← 2.5→3.1 교체
+  gemini    : main=gemini-3.1-flash-lite  intent=gemini-3.1-flash-lite  ← 가성비 포지션 비교용
   anthropic : main=claude-sonnet-4-6    intent=claude-haiku-4-5-20251001
   deepseek  : main=deepseek-v4-flash    intent=deepseek-v4-flash  ← 신규 추가
 
@@ -57,7 +57,7 @@ class ModelRole(str, Enum):
 
 
 # provider × 역할 → 기본 모델명 (.env 로 오버라이드 가능)
-# gemini: 2.5-flash → 3.1-flash 교체 (최신 안정 Flash)
+# gemini: 2.5-flash → 3.1-flash-lite 교체 (provider 비교에서 가성비 포지션 대표로 채택)
 # deepseek 신규 추가 (v4-flash: tool calling + structured output 지원)
 _DEFAULT_MODELS = {
     "openai": {
@@ -65,8 +65,8 @@ _DEFAULT_MODELS = {
         ModelRole.INTENT: "gpt-5.4-mini",
     },
     "gemini": {
-        ModelRole.MAIN:   "gemini-3.1-flash",   # ← 2.5-flash 에서 교체
-        ModelRole.INTENT: "gemini-3.1-flash",
+        ModelRole.MAIN:   "gemini-3.1-flash-lite",   # ← 2.5-flash 에서 교체(가성비 포지션 대표)
+        ModelRole.INTENT: "gemini-3.1-flash-lite",
     },
     "anthropic": {
         ModelRole.MAIN:   "claude-sonnet-4-6",
@@ -136,7 +136,7 @@ def _create_openai(model_name: str, temperature: float):
 
 
 def _create_gemini(model_name: str, temperature: float):
-    """gemini-3.1-flash 로 교체.
+    """gemini-3.1-flash-lite 로 교체.
 
     [Gemini 3+ temperature 주의]
     langchain-google-genai 는 Gemini 3+ 에서 temperature < 1.0 이면
