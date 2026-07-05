@@ -190,6 +190,32 @@ def _to_rag_hit(product: dict) -> dict:
     }
 
 
+_REFERENCE_MARKERS = ("방금", "아까", "그거", "그것", "저거", "그 상품", "이거")
+_PRICE_ASK_MARKERS = ("얼마", "가격")
+
+
+def _detect_price_reference(question: str) -> bool:
+    """'방금 말한 거 얼마야?' 처럼 직전 발화 속 단일 상품 가격을 되묻는 질문인지 판단."""
+    return (any(m in question for m in _REFERENCE_MARKERS)
+            and any(m in question for m in _PRICE_ASK_MARKERS))
+
+
+def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
+    """전체 히스토리가 아니라 '가장 최근 봇 발화 1개'에서만 상품을 추출.
+
+    [비교 경로(_match_history_products)와의 차이] 비교 질문("그 중 제일 싼 건")은
+    여러 턴에 걸쳐 언급된 후보 전체가 대상이지만, 단일 참조 질문("방금 말한 거")은
+    바로 직전 봇 발화 하나만 봐야 한다 — 그렇지 않으면 훨씬 이전 턴의 상품과
+    헷갈릴 수 있다.
+    """
+    bot_turns = [h.get("text", "") for h in history if h.get("role") == "bot"]
+    if not bot_turns:
+        return []
+    all_products = fetch_all_products()
+    return [p for p in all_products
+            if p.get("stock", 0) > 0 and p["product_name"] in bot_turns[-1]]
+
+
 SEMANTIC_TOP_K = 4
 _SEMANTIC_NO_HIT_MSG = (
     "죄송합니다, 조건에 맞는 상품을 찾지 못했어요. 다른 검색어로 다시 시도해 주세요."
@@ -224,6 +250,18 @@ async def semantic_node(state: ShoppingState) -> dict:
             answer = (f"이전에 안내해드린 상품 중 {label} 건 "
                       f"{target['product_name']}({_format_price(target['price'])})이에요.")
             return {"rag_hits": [_to_rag_hit(p) for p in mentioned], "raw_answer": answer}
+
+    # [정확도 보강] "방금 말한 거 얼마야?" 처럼 직전 발화 속 단일 상품을 재확인하는
+    # 질문도 임베딩 검색(질문 자체가 상품명과 무관해 엉뚱한 상품을 끌고 올 수 있음)
+    # 대신 직전 봇 발화에서 결정적으로 추출한다. 상품이 2개 이상 언급돼 모호하면
+    # 억지로 추측하지 않고 기존 경로로 안전하게 폴백한다.
+    if not superlative and _detect_price_reference(question):
+        recent = _match_last_bot_turn_products(history)
+        if len(recent) == 1:
+            target = recent[0]
+            answer = (f"방금 말씀드린 상품은 {target['product_name']}이고, "
+                      f"가격은 {_format_price(target['price'])}입니다.")
+            return {"rag_hits": [_to_rag_hit(target)], "raw_answer": answer}
 
     # [RAG 고도화] 검색+재랭킹 공통 파이프라인 사용 (라우터/Agent 일관성)
     # 로그인 회원이면 member_id 를 넘겨 취향 벡터 혼합(개인화 ON 시).

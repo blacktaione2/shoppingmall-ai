@@ -109,6 +109,50 @@ def test_superlative_without_matching_history_falls_back_to_rag(monkeypatch):
     assert result["raw_answer"] == "티셔츠를 추천드려요."
 
 
+def test_single_reference_question_uses_last_bot_turn(monkeypatch):
+    """'방금 말한 거 얼마야?' → 직전 봇 발화(니트 1개만 언급)에서 결정적으로 답해야 한다."""
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    history = [
+        {"role": "user", "text": "겨울에 따뜻한 옷 추천해줘"},
+        {"role": "bot", "text": _BOT_TURN_TEXT},
+        {"role": "user", "text": "그 중에 제일 싼 건?"},
+        {"role": "bot", "text": "이전에 안내해드린 상품 중 가장 저렴한 건 슬림핏 터틀넥 니트(68,000원)이에요."},
+    ]
+    state = {"question": "방금 말한 거 얼마라고?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert "슬림핏 터틀넥 니트" in result["raw_answer"]
+    assert "68,000" in result["raw_answer"]
+    assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
+
+
+def test_single_reference_falls_back_when_ambiguous(monkeypatch):
+    """직전 봇 발화에 상품이 2개 이상 언급되면 억지로 추측하지 않고 기존 경로로 폴백해야 한다."""
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    called = {"search": False}
+
+    async def fake_search_and_rerank(question, top_n=4, member_id=None):
+        called["search"] = True
+        return [{"product_id": 1, "product_name": "화이트 베이직 크루넥 티셔츠", "price": 35000}]
+
+    async def fake_generate_rag_response(question, hits, history=None):
+        return "확인이 필요해요."
+
+    import graph.rag_pipeline as rag_pipeline
+    monkeypatch.setattr(rag_pipeline, "search_and_rerank", fake_search_and_rerank, raising=True)
+    monkeypatch.setattr(nodes.rag_service, "generate_rag_response", fake_generate_rag_response, raising=True)
+
+    # 직전 봇 발화(_BOT_TURN_TEXT)에 3개 상품이 동시에 언급돼 모호함
+    history = _history_with_bot_turn()
+    state = {"question": "방금 말한 거 얼마야?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert called["search"] is True
+    assert result["raw_answer"] == "확인이 필요해요."
+
+
 def test_non_superlative_question_unaffected(monkeypatch):
     """가격 최상급 표현이 없는 일반 질문은 기존 경로를 그대로 타야 한다(회귀 방지)."""
     monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
