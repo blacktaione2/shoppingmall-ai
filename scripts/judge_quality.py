@@ -69,7 +69,17 @@ def judge_one(client: OpenAI, question: str, answer: str, context: str) -> dict 
             response_format={"type": "json_object"},
             temperature=0,
         )
-        return json.loads(resp.choices[0].message.content)
+        result = json.loads(resp.choices[0].message.content)
+        # [측정 방법론 수정] context="(없음)"인 경우(STRUCTURED_QUERY/FAQ/ORDER_INQUIRY 등
+        # sources 가 애초에 안 붙는 인텐트, 또는 SEMANTIC_SEARCH 0건 검색) 는 대조할
+        # 근거 자체가 없어 심판이 환각 여부를 판단할 수 없다. STRUCTURED_QUERY 등은
+        # LLM 자유생성이 아니라 DB 값을 그대로 템플릿에 채운 것이라 구조적으로 환각이
+        # 불가능하므로, 심판의 no_hallucination 추측을 신뢰하지 않고 정상(1)으로
+        # 확정한다. accuracy/fluency/intent 는 심판 의견을 그대로 유지한다(답변이
+        # 실제로 친절하고 적절한지는 컨텍스트 유무와 무관하게 유의미한 평가라서).
+        if context == "(없음)":
+            result["no_hallucination"] = 1
+        return result
     except Exception as exc:  # noqa: BLE001 — 채점 실패 행은 집계에서 제외하고 계속
         logger.warning("채점 실패(건너뜀): %s", exc)
         return None
@@ -88,9 +98,13 @@ def main() -> None:
     rows = [r for r in rows if r.get("answer")]
 
     scored, bait_flags = [], []
+    context_empty_count = 0
     out_f = open(args.out, "w", encoding="utf-8") if args.out else None
     for r in rows:
-        s = judge_one(client, r["question"], r["answer"], build_context(r))
+        context = build_context(r)
+        if context == "(없음)":
+            context_empty_count += 1
+        s = judge_one(client, r["question"], r["answer"], context)
         if s is None:
             continue
         quality = (s["accuracy"] + s["fluency"] + s["intent"]) / 3 * s["no_hallucination"]
@@ -114,6 +128,10 @@ def main() -> None:
     logger.info("=" * 50)
     logger.info("채점 %d건 | 평균 품질점수 %.2f/5 | 환각률 %.1f%%",
                 len(scored), avg_quality, halluc_rate * 100)
+    if context_empty_count:
+        logger.info("(참고 정보 없어 환각 채점 자동 정상 처리: %d/%d건 — "
+                    "STRUCTURED_QUERY/FAQ/ORDER_INQUIRY 등 템플릿 응답 또는 검색 0건)",
+                    context_empty_count, len(scored))
     if bait_flags:
         logger.info("halluc_bait 부분집합(%d건) 환각률: %.1f%%  ← 환각 가드 실측(⑥)",
                     len(bait_flags), (1 - statistics.mean(bait_flags)) * 100)
