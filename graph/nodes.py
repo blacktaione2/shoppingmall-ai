@@ -240,6 +240,11 @@ async def _resolve_product_attribute_query(question: str, history: list[dict]):
     result: ProductAttributeQuery = await (prompt | structured_llm).ainvoke({
         "question": question, "history": history_to_messages(history),
     })
+    logger.info(
+        "속성 질문 판단: question=%r history_len=%d is_asking=%s product_name=%r attribute=%s",
+        question, len(history), result.is_asking_about_specific_product,
+        result.product_name, result.attribute,
+    )
     if not result.is_asking_about_specific_product:
         return None, None
     target = None
