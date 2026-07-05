@@ -109,6 +109,41 @@ def test_superlative_without_matching_history_falls_back_to_rag(monkeypatch):
     assert result["raw_answer"] == "티셔츠를 추천드려요."
 
 
+_BOT_TURN_WITH_COMBO_MENTION = (
+    "겨울에 따뜻하게 입으시려면 이 3가지를 특히 추천드려요. "
+    "경량 패딩 점퍼 135,000원이 좋아요. "
+    "슬림핏 터틀넥 니트 68,000원도 추천드려요. "
+    "오버핏 양털 후리스 98,000원도 잘 맞아요. "
+    "편안한 캐주얼 느낌을 원하시면 화이트 베이직 크루넥 티셔츠 + "
+    "오버핏 양털 후리스 조합도 좋아요."
+)
+
+
+def test_combo_mention_without_price_is_not_counted_as_candidate(monkeypatch):
+    """조합 추천 문장에 가격 없이 이름만 언급된 상품(티셔츠)은 후보에서 제외돼야 한다.
+
+    [실제 재현된 버그] "화이트 베이직 크루넥 티셔츠 + 오버핏 양털 후리스 조합도
+    좋아요"처럼 가격 없이 이름만 곁가지로 언급됐는데, DB 상 실제 가격(35,000원)이
+    다른 상품들보다 낮아서 "최저가"로 잘못 뽑혔었다.
+    """
+    products = _PRODUCTS + [
+        {"product_id": 1, "product_name": "화이트 베이직 크루넥 티셔츠", "price": 35000, "stock": 45},
+    ]
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: products, raising=True)
+
+    history = [
+        {"role": "user", "text": "겨울에 따뜻한 옷 추천해줘"},
+        {"role": "bot", "text": _BOT_TURN_WITH_COMBO_MENTION},
+    ]
+    state = {"question": "그 중 제일 싼 건?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert "화이트 베이직 크루넥 티셔츠" not in result["raw_answer"]
+    assert "슬림핏 터틀넥 니트" in result["raw_answer"]
+    assert "68,000" in result["raw_answer"]
+    assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
+
+
 def test_single_reference_question_uses_last_bot_turn(monkeypatch):
     """'방금 말한 거 얼마야?' → 직전 봇 발화(니트 1개만 언급)에서 결정적으로 답해야 한다."""
     monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)

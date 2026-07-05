@@ -16,6 +16,7 @@ LangGraph 노드 함수 모음.
 """
 import asyncio
 import logging
+import re
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
@@ -166,8 +167,14 @@ def _match_history_products(history: list[dict]) -> list[dict]:
     if not bot_text:
         return []
     all_products = fetch_all_products()
+    # [버그 수정] 상품명이 텍스트에 있다는 것만으론 부족하다 — "조합 추천도 좋아요"처럼
+    # 가격 없이 이름만 곁가지로 한 번 더 언급되는 경우까지 후보로 잡혀서, 원래
+    # 추천 대상이 아니었던 상품이 최저가로 잘못 뽑히는 문제가 있었다. 가격도 같은
+    # 텍스트에 함께 언급된 상품만 "실제로 추천된 상품"으로 인정한다.
     return [p for p in all_products
-            if p.get("stock", 0) > 0 and p["product_name"] in bot_text]
+            if p.get("stock", 0) > 0
+            and p["product_name"] in bot_text
+            and _price_mentioned_exactly(p["price"], bot_text)]
 
 
 def _to_rag_hit(product: dict) -> dict:
@@ -188,6 +195,19 @@ def _to_rag_hit(product: dict) -> dict:
         },
         "distance": 0.0,
     }
+
+
+def _price_mentioned_exactly(price, text: str) -> bool:
+    """price 의 포맷 문자열이 text 안에 '더 큰 숫자의 일부'가 아니라 정확히 등장하는지 확인.
+
+    [버그 수정] 단순 in 체크는 "35,000원"이 "135,000원"의 부분 문자열이라서
+    통과해버려, 가격이 실제로 언급 안 된 상품(예: 조합 추천에 이름만 곁가지로
+    나온 상품)이 우연히 다른 상품 가격의 일부와 겹쳐 후보로 잘못 인정될 수 있다.
+    앞에 숫자가 이어지지 않는 위치에서만 매칭되도록 정규식 lookbehind 로 방지한다.
+    """
+    price_str = _format_price(price)
+    pattern = r"(?<!\d)" + re.escape(price_str)
+    return bool(re.search(pattern, text))
 
 
 _REFERENCE_MARKERS = ("방금", "아까", "그거", "그것", "저거", "그 상품", "이거")
@@ -212,8 +232,12 @@ def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
     if not bot_turns:
         return []
     all_products = fetch_all_products()
+    # [버그 수정] _match_history_products 와 동일한 이유로, 가격도 같이
+    # 언급된 상품만 인정한다.
     return [p for p in all_products
-            if p.get("stock", 0) > 0 and p["product_name"] in bot_turns[-1]]
+            if p.get("stock", 0) > 0
+            and p["product_name"] in bot_turns[-1]
+            and _price_mentioned_exactly(p["price"], bot_turns[-1])]
 
 
 SEMANTIC_TOP_K = 4
