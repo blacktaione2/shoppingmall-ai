@@ -59,7 +59,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("evaluate_rag")
 
-_SEMANTIC_TOP_K = 1
+_SEMANTIC_TOP_K = 4
 _SAMPLE_PATH = "eval_dataset.json"
 
 _SAMPLE_DATASET = [
