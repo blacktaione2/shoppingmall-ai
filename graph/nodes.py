@@ -324,6 +324,11 @@ async def semantic_node(state: ShoppingState) -> dict:
     attribute = _detect_attribute_reference(question)
     if not superlative and attribute:
         target = _find_referenced_product(question, history)
+        logger.info(
+            "참조 상품 탐색: question=%r attribute=%s history_len=%d target=%s",
+            question, attribute, len(history),
+            target.get("product_name") if target else None,
+        )
         if target is not None:
             if attribute == "price":
                 answer = (f"방금 말씀드린 상품은 {target['product_name']}이고, "
