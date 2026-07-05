@@ -131,11 +131,12 @@ def _run_ragas(rows: list[dict]):
         from datasets import Dataset
         from ragas import evaluate
         from ragas.metrics import faithfulness, answer_relevancy, context_precision
-    except ImportError:
+    except ImportError as e:
         logger.error(
             "RAGAs 미설치. 평가 전용 의존성을 설치하세요:\n"
             "    pip install ragas datasets\n"
-            "(서버 런타임에는 불필요 — 오프라인 평가 전용)"
+            "(서버 런타임에는 불필요 — 오프라인 평가 전용)\n"
+            f"원본 에러: {e}"
         )
         sys.exit(1)
 
