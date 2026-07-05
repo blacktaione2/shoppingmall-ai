@@ -190,6 +190,26 @@ def test_single_reference_asks_clarifying_question_when_ambiguous(monkeypatch):
     assert result["rag_hits"] == []
 
 
+def test_stock_question_without_reference_marker_still_works(monkeypatch):
+    """실제 재현된 버그: '방금/아까/그거' 없이 '재고 있어?'만 물어도 직전 상품을
+    참조해야 한다 — classify_node 가 이미 구체적 조건 없는 질문만 여기로
+    보내므로, 참조어가 없어도 이전 언급 상품 질문으로 처리해야 한다.
+    """
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    history = [
+        {"role": "user", "text": "겨울에 따뜻한 옷 추천해줘"},
+        {"role": "bot", "text": _BOT_TURN_TEXT},
+        {"role": "user", "text": "그 중에 제일 싼 건?"},
+        {"role": "bot", "text": "이전에 안내해드린 상품 중 가장 저렴한 건 슬림핏 터틀넥 니트(68,000원)이에요."},
+    ]
+    state = {"question": "재고 있어?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert "슬림핏 터틀넥 니트" in result["raw_answer"]
+    assert "재고 30개" in result["raw_answer"]
+
+
 def test_stock_reference_question_answers_in_stock(monkeypatch):
     """'그거 재고 있어?' → 직전 발화 속 단일 상품의 재고를 결정적으로 답해야 한다."""
     monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)

@@ -210,7 +210,6 @@ def _price_mentioned_exactly(price, text: str) -> bool:
     return bool(re.search(pattern, text))
 
 
-_REFERENCE_MARKERS = ("방금", "아까", "그거", "그것", "저거", "그 상품", "이거")
 # [일반화] 가격뿐 아니라 재고 재질문("그거 재고 있어?")도 같은 방식으로 처리한다.
 # 새 속성이 필요하면 이 딕셔너리에 항목만 추가하면 된다.
 _ATTRIBUTE_MARKERS = {
@@ -220,12 +219,13 @@ _ATTRIBUTE_MARKERS = {
 
 
 def _detect_attribute_reference(question: str) -> str | None:
-    """'방금 말한 거 얼마야?'/'그거 재고 있어?' 처럼 직전 발화 속 단일 상품의
-    특정 속성을 되묻는 질문인지 판단한다. 참조어+속성어가 둘 다 있어야 하며,
+    """'방금 말한 거 얼마야?'/'재고 있어?' 처럼 직전 발화 속 단일 상품의
+    특정 속성을 되묻는 질문인지 판단한다. 속성어만 있으면 되고 "방금"/"아까"
+    같은 참조어는 없어도 된다 — classify_node 가 이미 카테고리 등 구체적
+    조건이 있으면 STRUCTURED_QUERY 로 보내므로, 여기 도달했다면 속성어만
+    있어도 사실상 "이전에 언급된 상품"을 가리키는 질문으로 좁혀져 있다.
     해당하면 속성 키("price"/"stock")를, 아니면 None 을 반환한다.
     """
-    if not any(m in question for m in _REFERENCE_MARKERS):
-        return None
     for attribute, markers in _ATTRIBUTE_MARKERS.items():
         if any(m in question for m in markers):
             return attribute
