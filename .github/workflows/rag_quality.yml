@@ -72,8 +72,8 @@ jobs:
           python -m scripts.evaluate_rag \
             --dataset scripts/ci_fixtures/eval_dataset.json \
             --ci \
-            --threshold-faithfulness 0.99 \
-            --threshold-answer-relevancy 0.99
+            --threshold-faithfulness 0.60 \
+            --threshold-answer-relevancy 0.60
         # [운영 팁] 처음엔 임계값을 보수적으로(0.6) 잡아 베이스라인을 확보한 뒤
         #          실측 점수를 보고 점진적으로 올린다. Context Precision 은
         #          재랭킹(RERANK_ENABLED=true)과 함께 검사하는 것을 권장.
