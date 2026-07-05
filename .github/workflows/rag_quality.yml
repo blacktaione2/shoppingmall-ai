@@ -46,10 +46,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ragas==0.3.9 datasets   # 평가 전용(런타임 의존성 아님)
+          pip install ragas==0.3.9 "langchain-community<0.4" datasets   # 평가 전용(런타임 의존성 아님)
           # [버그 회피] ragas>=0.4 는 langchain_community.chat_models.vertexai(이미
           # 삭제된 경로)를 참조해 import 자체가 실패하는 알려진 버그가 있다
           # (ragas GitHub issue #2745). 0.3.9 는 이 문제가 없어 버전을 고정한다.
+          # 다만 langchain-community 자체도 0.4 부터 vertexai 서브모듈을 제거해서,
+          # ragas 버전만 낮춰도 langchain-community 를 최신으로 깔면 같은 에러가
+          # 재현된다 — 이슈에서 확인된 정상 조합(langchain-community 0.3.x)에 맞춰
+          # 같이 고정한다.
 
       - name: Wait for ChromaDB
         run: |
