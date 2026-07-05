@@ -46,6 +46,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 
@@ -227,7 +228,13 @@ def _enforce_thresholds(result, thresholds: dict) -> None:
             if actual is None:
                 logger.warning("지표 '%s' 점수를 찾지 못해 검사 생략", metric)
                 continue
-            if actual < minimum:
+            # [버그 수정] actual 이 NaN 이면 "actual < minimum" 비교가 파이썬에서
+            # 항상 False 를 반환해(NaN 은 모든 비교에서 False), 임계값을 아무리
+            # 올려도 게이트가 조용히 통과해버렸다. NaN 은 "점수를 못 낸 것"이므로
+            # 미달(실패)로 처리한다.
+            if math.isnan(actual):
+                failures.append(f"{metric}=NaN (점수 계산 실패, 기준 {minimum:.3f})")
+            elif actual < minimum:
                 failures.append(f"{metric}={actual:.3f} < 기준 {minimum:.3f}")
 
     if failures:
