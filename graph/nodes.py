@@ -215,6 +215,7 @@ def _price_mentioned_exactly(price, text: str) -> bool:
 _ATTRIBUTE_MARKERS = {
     "price": ("얼마", "가격"),
     "stock": ("재고", "남았"),
+    "name": ("뭐였", "뭐지", "뭐야", "무엇"),
 }
 
 
@@ -253,17 +254,32 @@ def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
             and _price_mentioned_exactly(p["price"], bot_turns[-1])]
 
 
-def _narrow_by_question_mention(candidates: list[dict], question: str) -> list[dict]:
-    """모호한 후보(2개 이상) 중, 현재 질문에 이름(또는 이름의 한 단어)이
-    실제로 언급된 것으로 좁힌다.
+def _find_referenced_product(question: str, history: list[dict]) -> dict | None:
+    """참조 질문(가격/재고/이름 확인)이 가리키는 상품 하나를 결정적으로 찾는다.
 
-    [버그 수정] "오버핏 양털 후리스 재고 있어?"처럼 질문 자체에 정확한 상품명을
-    말해도, 직전 봇 발화에 여러 상품이 언급돼 있으면 무조건 모호하다고 판단해
-    되묻기만 했다. 질문에 이미 특정된 상품이 있으면 그걸 우선한다.
+    [버그 수정] 기존엔 "직전 봇 발화"만 보고 판단해서, 거기에 그 상품 언급이
+    아예 없으면(예: "방금 말한 상품이 뭐지" 자체엔 상품명이 없으니 당연히
+    없음, 또는 최초 오분류로 엉뚱한 상품이 언급된 경우) 통째로 못 찾았다.
+    우선순위:
+      1) 질문 자체에 명시된 상품명(가장 확실한 신호, 히스토리 상태와 무관)
+      2) 직전 봇 발화에 언급된 상품(1)에서 질문 언급으로 우선 좁힘)
+    하나로 안 좁혀지면 None.
     """
-    narrowed = [c for c in candidates
-                if any(tok in question for tok in c["product_name"].split() if len(tok) >= 2)]
-    return narrowed if len(narrowed) == 1 else candidates
+    all_products = fetch_all_products()
+    named = [p for p in all_products
+             if any(tok in question for tok in p["product_name"].split() if len(tok) >= 2)]
+    if len(named) == 1:
+        return named[0]
+
+    recent = _match_last_bot_turn_products(history)
+    if len(recent) == 1:
+        return recent[0]
+    if len(recent) > 1 and named:
+        named_ids = {p["product_id"] for p in named}
+        narrowed = [p for p in recent if p.get("product_id") in named_ids]
+        if len(narrowed) == 1:
+            return narrowed[0]
+    return None
 
 
 SEMANTIC_TOP_K = 4
@@ -307,18 +323,17 @@ async def semantic_node(state: ShoppingState) -> dict:
     # 억지로 추측하지 않고 기존 경로로 안전하게 폴백한다.
     attribute = _detect_attribute_reference(question)
     if not superlative and attribute:
-        recent = _match_last_bot_turn_products(history)
-        if len(recent) > 1:
-            recent = _narrow_by_question_mention(recent, question)
-        if len(recent) == 1:
-            target = recent[0]
+        target = _find_referenced_product(question, history)
+        if target is not None:
             if attribute == "price":
                 answer = (f"방금 말씀드린 상품은 {target['product_name']}이고, "
                           f"가격은 {_format_price(target['price'])}입니다.")
-            else:  # "stock"
+            elif attribute == "stock":
                 stock = target.get("stock", 0)
                 answer = (f"{target['product_name']}은 현재 품절이에요." if stock <= 0
                           else f"{target['product_name']}은 현재 재고 {stock}개 있어요.")
+            else:  # "name"
+                answer = f"방금 말씀드린 상품은 {target['product_name']}입니다."
             return {"rag_hits": [_to_rag_hit(target)], "raw_answer": answer}
         # [버그 수정] 상품이 특정 안 되면(0개/여러 개) 검색으로 폴백하지 않는다.
         # "재고 있어?" 같은 참조 질문 자체가 특정 상품을 가리키는 것이지 새로운

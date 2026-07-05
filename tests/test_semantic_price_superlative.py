@@ -162,6 +162,39 @@ def test_single_reference_question_uses_last_bot_turn(monkeypatch):
     assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
 
 
+def test_name_question_uses_last_bot_turn_single_product(monkeypatch):
+    """'방금 말한 상품이 뭐지' 처럼 이름 자체를 확인하는 질문도 처리해야 한다."""
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    history = [
+        {"role": "user", "text": "그 중에 제일 싼 건?"},
+        {"role": "bot", "text": "이전에 안내해드린 상품 중 가장 저렴한 건 슬림핏 터틀넥 니트(68,000원)이에요."},
+    ]
+    state = {"question": "방금 말한 상품이 뭐지?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert result["raw_answer"] == "방금 말씀드린 상품은 슬림핏 터틀넥 니트입니다."
+
+
+def test_attribute_question_with_no_history_mention_still_resolves_via_question(monkeypatch):
+    """실제 재현된 버그: 직전 봇 발화에 그 상품 언급이 아예 없어도(0개 매칭),
+    질문 자체에 정확한 상품명이 있으면 찾아내야 한다 — 예전엔 이 경우 완전히
+    실패해서 엉뚱한 검색으로 새다가 이후 턴까지 전부 망가졌었다.
+    """
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    # 직전 봇 발화엔 후리스 얘기가 전혀 없음(완전히 무관한 답변)
+    history = [
+        {"role": "user", "text": "방금 말한 상품이 뭐지?"},
+        {"role": "bot", "text": "죄송합니다, 조건에 맞는 상품을 찾지 못했어요."},
+    ]
+    state = {"question": "오버핏 양털 후리스 재고 있어?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert "오버핏 양털 후리스" in result["raw_answer"]
+    assert "재고 22개" in result["raw_answer"]
+
+
 def test_ambiguous_but_question_names_exact_product(monkeypatch):
     """실제 재현된 버그: 직전 발화에 3개가 언급돼 모호해도, 이번 질문 자체에
     정확한 상품명이 있으면 그걸로 좁혀서 답해야 한다(되묻지 않아야 함).
