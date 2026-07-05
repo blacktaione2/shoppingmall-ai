@@ -226,6 +226,13 @@ async def search_and_rerank(query: str, top_n: int = 4, member_id: int | None = 
         except Exception:
             logger.exception("BM25/RRF 융합 실패 → Dense 후보로 폴백")
 
+    # [버그 수정] STOCK=0(품절) 상품은 스토어프론트(상품 목록)에는 안 보이는데
+    # 검색 인덱스엔 그대로 있어서, 챗봇이 화면에 없는 품절 상품을 안내하는
+    # 문제가 있었다. fetch_all_products() 가 품절 상품도 전부 인덱싱하는 건
+    # 의도된 설계(그 함수 독스트링 참고: "검색 시 metadata로 필터링")이고,
+    # 그 필터링이 여기 빠져 있었다.
+    candidates = [c for c in candidates if c.get("metadata", {}).get("stock", 1) > 0]
+
     logger.info("SEMANTIC 최종 후보 %d건 (재랭킹=%s, CLIP=%s, 질문=%r)",
                 len(candidates), rerank_service.is_rerank_enabled(),
                 clip_service.is_serving_enabled(), query)

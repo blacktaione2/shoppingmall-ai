@@ -114,6 +114,51 @@ def test_hits_to_sources():
 # ────────────────────────────────────────────────────────────────────────
 # 6) search_and_rerank: 후보 확대(ON) vs top_n(OFF)
 # ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
+# 7) [버그 수정] STOCK=0(품절) 후보는 최종 결과에서 제외돼야 한다
+# ────────────────────────────────────────────────────────────────────────
+def test_search_and_rerank_excludes_soldout(monkeypatch):
+    async def fake_embed(q):
+        return [0.0] * 1536
+
+    def _hit_with_stock(pid, name, stock):
+        h = _hit(pid, name, 1000 * pid, 0.1 * pid)
+        h["metadata"]["stock"] = stock
+        return h
+
+    async def fake_search(emb, n_results):
+        return [
+            _hit_with_stock(1, "품절상품", stock=0),
+            _hit_with_stock(2, "재고있는상품", stock=5),
+        ]
+
+    monkeypatch.setenv("RERANK_ENABLED", "false")
+    monkeypatch.setattr(rag_pipeline.embed_service, "get_embedding", fake_embed, raising=True)
+    monkeypatch.setattr(rag_pipeline.chroma_service, "search_similar", fake_search, raising=True)
+
+    hits = asyncio.run(rag_pipeline.search_and_rerank("q", top_n=4))
+
+    ids = [h["id"] for h in hits]
+    assert "1" not in ids   # 품절 상품 제외
+    assert "2" in ids       # 재고 있는 상품은 유지
+
+
+def test_search_and_rerank_missing_stock_metadata_not_excluded(monkeypatch):
+    """stock 메타데이터가 아예 없으면(정보 없음) 품절로 오해석해 제외하면 안 된다."""
+    async def fake_embed(q):
+        return [0.0] * 1536
+
+    async def fake_search(emb, n_results):
+        return [_hit(1, "상품", 1000, 0.1)]   # metadata에 stock 키 자체가 없음
+
+    monkeypatch.setenv("RERANK_ENABLED", "false")
+    monkeypatch.setattr(rag_pipeline.embed_service, "get_embedding", fake_embed, raising=True)
+    monkeypatch.setattr(rag_pipeline.chroma_service, "search_similar", fake_search, raising=True)
+
+    hits = asyncio.run(rag_pipeline.search_and_rerank("q", top_n=4))
+    assert len(hits) == 1
+
+
 def test_search_candidate_count(monkeypatch):
     captured = {}
     async def fake_embed(q):

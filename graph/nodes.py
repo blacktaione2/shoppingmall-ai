@@ -305,6 +305,11 @@ async def semantic_node(state: ShoppingState) -> dict:
                 answer = (f"{target['product_name']}은 현재 품절이에요." if stock <= 0
                           else f"{target['product_name']}은 현재 재고 {stock}개 있어요.")
             return {"rag_hits": [_to_rag_hit(target)], "raw_answer": answer}
+        # [버그 수정] 상품이 특정 안 되면(0개/여러 개) 검색으로 폴백하지 않는다.
+        # "재고 있어?" 같은 참조 질문 자체가 특정 상품을 가리키는 것이지 새로운
+        # 상품 검색이 아니라서, 폴백 검색이 질문과 무관한(때로는 품절) 상품을
+        # 끌고 와 답하는 문제가 있었다. 대신 바로 되묻는다.
+        return {"rag_hits": [], "raw_answer": "어떤 상품을 말씀하시는지 다시 알려주시겠어요?"}
 
     # [RAG 고도화] 검색+재랭킹 공통 파이프라인 사용 (라우터/Agent 일관성)
     # 로그인 회원이면 member_id 를 넘겨 취향 벡터 혼합(개인화 ON 시).

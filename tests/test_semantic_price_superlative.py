@@ -162,8 +162,13 @@ def test_single_reference_question_uses_last_bot_turn(monkeypatch):
     assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
 
 
-def test_single_reference_falls_back_when_ambiguous(monkeypatch):
-    """직전 봇 발화에 상품이 2개 이상 언급되면 억지로 추측하지 않고 기존 경로로 폴백해야 한다."""
+def test_single_reference_asks_clarifying_question_when_ambiguous(monkeypatch):
+    """직전 봇 발화에 상품이 2개 이상 언급되면 검색으로 폴백하지 않고 바로 되물어야 한다.
+
+    [버그 수정] 예전엔 기존 검색 경로로 폴백했는데, "재고 있어?" 같은 참조 질문
+    자체가 새 상품 검색이 아니라서 폴백 검색이 품절 상품 등 엉뚱한 결과를
+    끌고 오는 문제가 있었다. 이제 검색을 아예 시도하지 않고 바로 되묻는다.
+    """
     monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
 
     called = {"search": False}
@@ -172,20 +177,17 @@ def test_single_reference_falls_back_when_ambiguous(monkeypatch):
         called["search"] = True
         return [{"product_id": 1, "product_name": "화이트 베이직 크루넥 티셔츠", "price": 35000}]
 
-    async def fake_generate_rag_response(question, hits, history=None):
-        return "확인이 필요해요."
-
     import graph.rag_pipeline as rag_pipeline
     monkeypatch.setattr(rag_pipeline, "search_and_rerank", fake_search_and_rerank, raising=True)
-    monkeypatch.setattr(nodes.rag_service, "generate_rag_response", fake_generate_rag_response, raising=True)
 
     # 직전 봇 발화(_BOT_TURN_TEXT)에 3개 상품이 동시에 언급돼 모호함
     history = _history_with_bot_turn()
     state = {"question": "방금 말한 거 얼마야?", "history": history}
     result = asyncio.run(nodes.semantic_node(state))
 
-    assert called["search"] is True
-    assert result["raw_answer"] == "확인이 필요해요."
+    assert called["search"] is False
+    assert result["raw_answer"] == "어떤 상품을 말씀하시는지 다시 알려주시겠어요?"
+    assert result["rag_hits"] == []
 
 
 def test_stock_reference_question_answers_in_stock(monkeypatch):
