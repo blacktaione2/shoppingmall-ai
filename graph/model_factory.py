@@ -233,6 +233,14 @@ def _create_deepseek(model_name: str, temperature: float):
         api_key=_require_key("DEEPSEEK_API_KEY", "deepseek"),
         temperature=temperature,
         timeout=_get_timeout(),   # [개선] HTTP 요청 타임아웃(무한 대기 방지)
+        # [버그 수정] deepseek-v4-flash 는 기본적으로 thinking mode 로 동작하는데,
+        # 이 모드는 강제 도구 호출(tool_choice)을 지원하지 않는다.
+        # .with_structured_output() 이 내부적으로 tool_choice 를 강제하므로,
+        # classify_node 의 인텐트 분류가 매번 400 Thinking mode does not support
+        # this tool_choice 로 실패했다(DeepSeek API 의 알려진 제약, DeepSeek-V3
+        # 저장소 issue #1376 등에서 동일 현상 다수 보고됨). 이 프로젝트는 단순
+        # 분류/RAG 용도라 추론 모드가 애초에 불필요해 꺼도 기능 손실이 없다.
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
 
