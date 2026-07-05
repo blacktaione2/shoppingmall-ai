@@ -253,7 +253,7 @@ def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
             and _price_mentioned_exactly(p["price"], bot_turns[-1])]
 
 
-SEMANTIC_TOP_K = 1
+SEMANTIC_TOP_K = 4
 _SEMANTIC_NO_HIT_MSG = (
     "죄송합니다, 조건에 맞는 상품을 찾지 못했어요. 다른 검색어로 다시 시도해 주세요."
 )
