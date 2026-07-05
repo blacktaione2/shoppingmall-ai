@@ -99,3 +99,5 @@ async def generate_rag_response(
     # 기존 동작 유지: 빈 응답이어도 폴백 문구를 새로 만들지 않고 그대로 반환한다
     # (환각 가드가 빈/무관 답변을 재시도 경로로 잡아내는 안전망이 이미 있음).
     return (answer or "").strip()
+
+# RAGAs CI 게이트 확인용 테스트 주석
