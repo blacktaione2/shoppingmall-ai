@@ -38,7 +38,7 @@ from pipeline.intent_classifier import INTENT_SYSTEM_PROMPT
 from database.oracle_db import search_products_structured
 from services import rag_service
 from pipeline.faq_handler import _search_faq_sync
-from database.oracle_db import fetch_orders, fetch_order_by_id
+from database.oracle_db import fetch_orders, fetch_order_by_id, fetch_all_products
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,36 @@ async def structured_node(state: ShoppingState) -> dict:
 # ════════════════════════════════════════════════════════════════════════
 # 3) semantic_node — SEMANTIC_SEARCH (ChromaDB + RAG, 멀티모델 팩토리)
 # ════════════════════════════════════════════════════════════════════════
+_CHEAP_MARKERS = ("제일 싼", "가장 싼", "제일 저렴", "가장 저렴")
+_EXPENSIVE_MARKERS = ("제일 비싼", "가장 비싼", "제일 비싸", "가장 비싸")
+
+
+def _detect_price_superlative(question: str) -> str | None:
+    """질문에 최저가/최고가를 묻는 표현이 있으면 'cheap'/'expensive', 없으면 None."""
+    if any(m in question for m in _CHEAP_MARKERS):
+        return "cheap"
+    if any(m in question for m in _EXPENSIVE_MARKERS):
+        return "expensive"
+    return None
+
+
+def _match_history_products(history: list[dict]) -> list[dict]:
+    """이전 봇 발화에 실제로 언급된 상품명을 카탈로그와 대조해 최신 정보로 재조회.
+
+    [정확도 보강] "그 중 제일 싼 건?" 같은 가격 비교 질문은 LLM 자유생성이 숫자
+    비교를 틀릴 수 있어(예: 히스토리 속 3개 중 실제 최저가가 아닌 걸 고름),
+    이전 대화에 실제로 언급된 상품만 추려 파이썬으로 결정적으로 정렬한다.
+    게스트도 client_history 를 매 요청 보내므로(state["history"]) 로그인 여부와
+    무관하게 동작한다(체크포인터 전용 State 필드로 만들면 게스트는 혜택을 못 받음).
+    """
+    bot_text = " ".join(h.get("text", "") for h in history if h.get("role") == "bot")
+    if not bot_text:
+        return []
+    all_products = fetch_all_products()
+    return [p for p in all_products
+            if p.get("stock", 0) > 0 and p["product_name"] in bot_text]
+
+
 SEMANTIC_TOP_K = 4
 _SEMANTIC_NO_HIT_MSG = (
     "죄송합니다, 조건에 맞는 상품을 찾지 못했어요. 다른 검색어로 다시 시도해 주세요."
@@ -160,6 +190,20 @@ async def semantic_node(state: ShoppingState) -> dict:
     """
     question = state["question"]
     history = state.get("history", [])
+
+    # [정확도 보강] 이전에 언급된 상품 중 최저가/최고가를 묻는 질문은 LLM 대신
+    # 결정적 비교로 답한다 (분류 규칙상 카테고리 등 구체 조건이 있으면 이미
+    # structured_node 로 갔으므로, 여기 도달했다면 "모호한 참조"만 남은 상태).
+    superlative = _detect_price_superlative(question)
+    if superlative:
+        mentioned = _match_history_products(history)
+        if mentioned:
+            mentioned.sort(key=lambda p: p["price"], reverse=(superlative == "expensive"))
+            target = mentioned[0]
+            label = "가장 저렴한" if superlative == "cheap" else "가장 비싼"
+            answer = (f"이전에 안내해드린 상품 중 {label} 건 "
+                      f"{target['product_name']}({_format_price(target['price'])})이에요.")
+            return {"rag_hits": mentioned, "raw_answer": answer}
 
     # [RAG 고도화] 검색+재랭킹 공통 파이프라인 사용 (라우터/Agent 일관성)
     # 로그인 회원이면 member_id 를 넘겨 취향 벡터 혼합(개인화 ON 시).
