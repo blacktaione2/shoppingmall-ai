@@ -170,6 +170,26 @@ def _match_history_products(history: list[dict]) -> list[dict]:
             if p.get("stock", 0) > 0 and p["product_name"] in bot_text]
 
 
+def _to_rag_hit(product: dict) -> dict:
+    """Oracle 상품 dict(플랫 구조) → 기존 ChromaDB hits 형식으로 변환.
+
+    [버그 수정] guard.py 의 _validate_semantic_answer 는 hit["metadata"]["price"]/
+    ["product_name"] 을 읽는 ChromaDB 형식을 기대하는데, fetch_all_products() 는
+    플랫 dict 를 반환한다. 그대로 rag_hits 에 넣으면 가드가 가격/상품명 근거를
+    하나도 못 읽어 정상 답변까지 매번 환각으로 오판(재시도 실패 → 안전문구 대체)한다.
+    """
+    return {
+        "id": product.get("product_id"),
+        "document": product.get("description") or "",
+        "metadata": {
+            "product_name": product.get("product_name"),
+            "category": product.get("category"),
+            "price": product.get("price"),
+        },
+        "distance": 0.0,
+    }
+
+
 SEMANTIC_TOP_K = 4
 _SEMANTIC_NO_HIT_MSG = (
     "죄송합니다, 조건에 맞는 상품을 찾지 못했어요. 다른 검색어로 다시 시도해 주세요."
@@ -203,7 +223,7 @@ async def semantic_node(state: ShoppingState) -> dict:
             label = "가장 저렴한" if superlative == "cheap" else "가장 비싼"
             answer = (f"이전에 안내해드린 상품 중 {label} 건 "
                       f"{target['product_name']}({_format_price(target['price'])})이에요.")
-            return {"rag_hits": mentioned, "raw_answer": answer}
+            return {"rag_hits": [_to_rag_hit(p) for p in mentioned], "raw_answer": answer}
 
     # [RAG 고도화] 검색+재랭킹 공통 파이프라인 사용 (라우터/Agent 일관성)
     # 로그인 회원이면 member_id 를 넘겨 취향 벡터 혼합(개인화 ON 시).

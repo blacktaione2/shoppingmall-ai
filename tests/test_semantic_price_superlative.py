@@ -16,6 +16,7 @@ import asyncio
 import pytest
 
 from graph import nodes
+from pipeline.hallucination_guard import _validate_semantic_answer
 
 
 _PRODUCTS = [
@@ -48,6 +49,9 @@ def test_cheap_superlative_picks_actual_lowest_price(monkeypatch):
     assert "68,000" in result["raw_answer"]
     # 오답이었던 상품(양털 후리스, 98,000)이 정답으로 나오면 안 됨
     assert "오버핏 양털 후리스" not in result["raw_answer"]
+    # [회귀 방지] rag_hits 가 guard 가 기대하는 ChromaDB 형식(metadata.price/product_name)
+    # 이 아니면 실제 배포에서 정상 답변도 환각으로 오판돼 안전문구로 대체됐던 버그가 있었다.
+    assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
 
 
 def test_expensive_superlative_picks_actual_highest_price(monkeypatch):
@@ -59,6 +63,7 @@ def test_expensive_superlative_picks_actual_highest_price(monkeypatch):
 
     assert "경량 패딩 점퍼" in result["raw_answer"]
     assert "135,000" in result["raw_answer"]
+    assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
 
 
 def test_soldout_product_excluded_even_if_mentioned(monkeypatch):
