@@ -253,6 +253,19 @@ def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
             and _price_mentioned_exactly(p["price"], bot_turns[-1])]
 
 
+def _narrow_by_question_mention(candidates: list[dict], question: str) -> list[dict]:
+    """모호한 후보(2개 이상) 중, 현재 질문에 이름(또는 이름의 한 단어)이
+    실제로 언급된 것으로 좁힌다.
+
+    [버그 수정] "오버핏 양털 후리스 재고 있어?"처럼 질문 자체에 정확한 상품명을
+    말해도, 직전 봇 발화에 여러 상품이 언급돼 있으면 무조건 모호하다고 판단해
+    되묻기만 했다. 질문에 이미 특정된 상품이 있으면 그걸 우선한다.
+    """
+    narrowed = [c for c in candidates
+                if any(tok in question for tok in c["product_name"].split() if len(tok) >= 2)]
+    return narrowed if len(narrowed) == 1 else candidates
+
+
 SEMANTIC_TOP_K = 4
 _SEMANTIC_NO_HIT_MSG = (
     "죄송합니다, 조건에 맞는 상품을 찾지 못했어요. 다른 검색어로 다시 시도해 주세요."
@@ -295,6 +308,8 @@ async def semantic_node(state: ShoppingState) -> dict:
     attribute = _detect_attribute_reference(question)
     if not superlative and attribute:
         recent = _match_last_bot_turn_products(history)
+        if len(recent) > 1:
+            recent = _narrow_by_question_mention(recent, question)
         if len(recent) == 1:
             target = recent[0]
             if attribute == "price":

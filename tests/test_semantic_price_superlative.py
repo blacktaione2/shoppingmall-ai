@@ -162,6 +162,32 @@ def test_single_reference_question_uses_last_bot_turn(monkeypatch):
     assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
 
 
+def test_ambiguous_but_question_names_exact_product(monkeypatch):
+    """실제 재현된 버그: 직전 발화에 3개가 언급돼 모호해도, 이번 질문 자체에
+    정확한 상품명이 있으면 그걸로 좁혀서 답해야 한다(되묻지 않아야 함).
+    """
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    history = _history_with_bot_turn()   # 패딩/니트/후리스 3개 동시 언급 → 원래는 모호
+    state = {"question": "오버핏 양털 후리스 재고 있어?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert "오버핏 양털 후리스" in result["raw_answer"]
+    assert "재고 22개" in result["raw_answer"]
+    assert result["raw_answer"] != "어떤 상품을 말씀하시는지 다시 알려주시겠어요?"
+
+
+def test_ambiguous_and_question_has_no_product_name_still_asks(monkeypatch):
+    """질문에도 특정 상품명이 없으면(예: '재고 있어?'만) 여전히 되물어야 한다(회귀 방지)."""
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    history = _history_with_bot_turn()
+    state = {"question": "재고 있어?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert result["raw_answer"] == "어떤 상품을 말씀하시는지 다시 알려주시겠어요?"
+
+
 def test_single_reference_asks_clarifying_question_when_ambiguous(monkeypatch):
     """직전 봇 발화에 상품이 2개 이상 언급되면 검색으로 폴백하지 않고 바로 되물어야 한다.
 
