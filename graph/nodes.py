@@ -211,13 +211,25 @@ def _price_mentioned_exactly(price, text: str) -> bool:
 
 
 _REFERENCE_MARKERS = ("방금", "아까", "그거", "그것", "저거", "그 상품", "이거")
-_PRICE_ASK_MARKERS = ("얼마", "가격")
+# [일반화] 가격뿐 아니라 재고 재질문("그거 재고 있어?")도 같은 방식으로 처리한다.
+# 새 속성이 필요하면 이 딕셔너리에 항목만 추가하면 된다.
+_ATTRIBUTE_MARKERS = {
+    "price": ("얼마", "가격"),
+    "stock": ("재고", "남았"),
+}
 
 
-def _detect_price_reference(question: str) -> bool:
-    """'방금 말한 거 얼마야?' 처럼 직전 발화 속 단일 상품 가격을 되묻는 질문인지 판단."""
-    return (any(m in question for m in _REFERENCE_MARKERS)
-            and any(m in question for m in _PRICE_ASK_MARKERS))
+def _detect_attribute_reference(question: str) -> str | None:
+    """'방금 말한 거 얼마야?'/'그거 재고 있어?' 처럼 직전 발화 속 단일 상품의
+    특정 속성을 되묻는 질문인지 판단한다. 참조어+속성어가 둘 다 있어야 하며,
+    해당하면 속성 키("price"/"stock")를, 아니면 None 을 반환한다.
+    """
+    if not any(m in question for m in _REFERENCE_MARKERS):
+        return None
+    for attribute, markers in _ATTRIBUTE_MARKERS.items():
+        if any(m in question for m in markers):
+            return attribute
+    return None
 
 
 def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
@@ -232,11 +244,12 @@ def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
     if not bot_turns:
         return []
     all_products = fetch_all_products()
-    # [버그 수정] _match_history_products 와 동일한 이유로, 가격도 같이
-    # 언급된 상품만 인정한다.
+    # [버그 수정] 가격도 같이 언급된 상품만 인정한다(비교 경로와 동일 이유).
+    # [일반화] 여기서는 stock>0 필터를 두지 않는다 — 비교 경로(_match_history_products)와
+    # 달리, 단일 참조는 "그 상품이 지금 품절인지"를 묻는 재고 질문의 정답 자체일 수
+    # 있어서 미리 걸러내면 안 된다(그 사이 품절됐어도 정확히 "품절"이라고 답해야 함).
     return [p for p in all_products
-            if p.get("stock", 0) > 0
-            and p["product_name"] in bot_turns[-1]
+            if p["product_name"] in bot_turns[-1]
             and _price_mentioned_exactly(p["price"], bot_turns[-1])]
 
 
@@ -279,12 +292,18 @@ async def semantic_node(state: ShoppingState) -> dict:
     # 질문도 임베딩 검색(질문 자체가 상품명과 무관해 엉뚱한 상품을 끌고 올 수 있음)
     # 대신 직전 봇 발화에서 결정적으로 추출한다. 상품이 2개 이상 언급돼 모호하면
     # 억지로 추측하지 않고 기존 경로로 안전하게 폴백한다.
-    if not superlative and _detect_price_reference(question):
+    attribute = _detect_attribute_reference(question)
+    if not superlative and attribute:
         recent = _match_last_bot_turn_products(history)
         if len(recent) == 1:
             target = recent[0]
-            answer = (f"방금 말씀드린 상품은 {target['product_name']}이고, "
-                      f"가격은 {_format_price(target['price'])}입니다.")
+            if attribute == "price":
+                answer = (f"방금 말씀드린 상품은 {target['product_name']}이고, "
+                          f"가격은 {_format_price(target['price'])}입니다.")
+            else:  # "stock"
+                stock = target.get("stock", 0)
+                answer = (f"{target['product_name']}은 현재 품절이에요." if stock <= 0
+                          else f"{target['product_name']}은 현재 재고 {stock}개 있어요.")
             return {"rag_hits": [_to_rag_hit(target)], "raw_answer": answer}
 
     # [RAG 고도화] 검색+재랭킹 공통 파이프라인 사용 (라우터/Agent 일관성)

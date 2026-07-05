@@ -188,6 +188,41 @@ def test_single_reference_falls_back_when_ambiguous(monkeypatch):
     assert result["raw_answer"] == "확인이 필요해요."
 
 
+def test_stock_reference_question_answers_in_stock(monkeypatch):
+    """'그거 재고 있어?' → 직전 발화 속 단일 상품의 재고를 결정적으로 답해야 한다."""
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
+
+    history = [
+        {"role": "user", "text": "그 중에 제일 싼 건?"},
+        {"role": "bot", "text": "이전에 안내해드린 상품 중 가장 저렴한 건 슬림핏 터틀넥 니트(68,000원)이에요."},
+    ]
+    state = {"question": "그거 재고 있어?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert "슬림핏 터틀넥 니트" in result["raw_answer"]
+    assert "재고 30개" in result["raw_answer"]
+    assert _validate_semantic_answer(result["raw_answer"], result["rag_hits"]) is True
+
+
+def test_stock_reference_question_reports_soldout(monkeypatch):
+    """실제 재현 버그: 방금 언급한 상품이 품절이어도(stock=0) 정확히 "품절"이라고
+    답해야 한다 — stock>0 필터 때문에 후보에서 빠져 엉뚱한 검색으로 새던 문제였다.
+    """
+    products = [dict(p) for p in _PRODUCTS]
+    products[1]["stock"] = 0  # 슬림핏 터틀넥 니트를 품절 상태로 변경
+    monkeypatch.setattr(nodes, "fetch_all_products", lambda: products, raising=True)
+
+    history = [
+        {"role": "user", "text": "그 중에 제일 싼 건?"},
+        {"role": "bot", "text": "이전에 안내해드린 상품 중 가장 저렴한 건 슬림핏 터틀넥 니트(68,000원)이에요."},
+    ]
+    state = {"question": "그거 재고 있어?", "history": history}
+    result = asyncio.run(nodes.semantic_node(state))
+
+    assert "슬림핏 터틀넥 니트" in result["raw_answer"]
+    assert "품절" in result["raw_answer"]
+
+
 def test_non_superlative_question_unaffected(monkeypatch):
     """가격 최상급 표현이 없는 일반 질문은 기존 경로를 그대로 타야 한다(회귀 방지)."""
     monkeypatch.setattr(nodes, "fetch_all_products", lambda: _PRODUCTS, raising=True)
