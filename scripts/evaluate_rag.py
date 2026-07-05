@@ -46,6 +46,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 
@@ -131,11 +132,15 @@ def _run_ragas(rows: list[dict]):
         from datasets import Dataset
         from ragas import evaluate
         from ragas.metrics import faithfulness, answer_relevancy, context_precision
-    except ImportError:
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    except ImportError as e:
         logger.error(
             "RAGAs 미설치. 평가 전용 의존성을 설치하세요:\n"
             "    pip install ragas datasets\n"
-            "(서버 런타임에는 불필요 — 오프라인 평가 전용)"
+            "(서버 런타임에는 불필요 — 오프라인 평가 전용)\n"
+            f"원본 에러: {e}"
         )
         sys.exit(1)
 
@@ -153,9 +158,16 @@ def _run_ragas(rows: list[dict]):
 
     ds = Dataset.from_list(enriched)
     logger.info("RAGAs 평가 시작 (%d 행)...", len(enriched))
+    # [버그 수정] llm/embeddings 를 안 넘기면 RAGAs 가 내부 기본값으로 시도하다
+    # 조용히 실패해 NaN 을 반환하는 경우가 있다(faithfulness/answer_relevancy 는
+    # LLM 판정, answer_relevancy/context_precision 은 임베딩 유사도가 필요).
+    evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-5.4-mini", temperature=0))
+    evaluator_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
     result = evaluate(
         ds,
         metrics=[faithfulness, answer_relevancy, context_precision],
+        llm=evaluator_llm,
+        embeddings=evaluator_embeddings,
     )
     return result
 
@@ -226,7 +238,13 @@ def _enforce_thresholds(result, thresholds: dict) -> None:
             if actual is None:
                 logger.warning("지표 '%s' 점수를 찾지 못해 검사 생략", metric)
                 continue
-            if actual < minimum:
+            # [버그 수정] actual 이 NaN 이면 "actual < minimum" 비교가 파이썬에서
+            # 항상 False 를 반환해(NaN 은 모든 비교에서 False), 임계값을 아무리
+            # 올려도 게이트가 조용히 통과해버렸다. NaN 은 "점수를 못 낸 것"이므로
+            # 미달(실패)로 처리한다.
+            if math.isnan(actual):
+                failures.append(f"{metric}=NaN (점수 계산 실패, 기준 {minimum:.3f})")
+            elif actual < minimum:
                 failures.append(f"{metric}={actual:.3f} < 기준 {minimum:.3f}")
 
     if failures:
