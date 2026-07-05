@@ -563,6 +563,10 @@ async def guard_node(state: ShoppingState) -> dict:
         rag_hits=state.get("rag_hits", []),
         history=state.get("history", []),
     )
+    # [버그 수정] SYSTEM_PROMPT로 마크다운 굵게(**) 금지를 지시해도 LLM이 종종
+    # 그대로 써서, 모든 인텐트 답변이 합류하는 이 지점에서 강제로 벗긴다.
+    # 텍스트 내용은 그대로 두고 ** 기호만 제거한다.
+    final = re.sub(r"\*\*(.+?)\*\*", r"\1", final)
     return {"final_answer": final}
 
 
