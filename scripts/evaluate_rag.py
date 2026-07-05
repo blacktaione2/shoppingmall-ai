@@ -161,7 +161,7 @@ def _run_ragas(rows: list[dict]):
     # [버그 수정] llm/embeddings 를 안 넘기면 RAGAs 가 내부 기본값으로 시도하다
     # 조용히 실패해 NaN 을 반환하는 경우가 있다(faithfulness/answer_relevancy 는
     # LLM 판정, answer_relevancy/context_precision 은 임베딩 유사도가 필요).
-    evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-5.4-mini"))
+    evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-5.4-mini", temperature=0))
     evaluator_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
     result = evaluate(
         ds,
