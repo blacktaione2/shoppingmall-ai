@@ -96,9 +96,12 @@ def test_semantic_routing_and_rag_hits(monkeypatch):
         return fake_hits
     async def fake_rag(question, hits, history=None):
         return "롱패딩을 추천드려요. 가격은 99,000원입니다."
+    async def fake_resolve_attr(question, history):
+        return None, None
 
     monkeypatch.setattr(rag_pipeline, "search_and_rerank", fake_search_and_rerank, raising=True)
     monkeypatch.setattr(nodes.rag_service, "generate_rag_response", fake_rag, raising=True)
+    monkeypatch.setattr(nodes, "_resolve_product_attribute_query", fake_resolve_attr, raising=True)
 
     out = _run({"question": "겨울에 따뜻한 거", "is_guest": False, "history": []})
 
@@ -119,9 +122,12 @@ def test_semantic_no_hits(monkeypatch):
         return []
     async def fake_rag(question, hits, history=None):
         raise AssertionError("0건이면 RAG 호출하면 안 됨")
+    async def fake_resolve_attr(question, history):
+        return None, None
 
     monkeypatch.setattr(rag_pipeline, "search_and_rerank", fake_search_and_rerank, raising=True)
     monkeypatch.setattr(nodes.rag_service, "generate_rag_response", fake_rag, raising=True)
+    monkeypatch.setattr(nodes, "_resolve_product_attribute_query", fake_resolve_attr, raising=True)
 
     out = _run({"question": "존재하지않는상품xyz", "is_guest": False, "history": []})
     assert "찾지 못했" in out["final_answer"]

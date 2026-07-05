@@ -208,10 +208,13 @@ def test_chat_response_includes_sources(monkeypatch):
         return fake_hits
     async def fake_rag(question, hits, history=None):
         return "롱패딩을 추천드려요. 99,000원입니다."
+    async def fake_resolve_attr(question, history):
+        return None, None
 
     monkeypatch.setattr(nodes, "classify_node", fake_classify, raising=True)
     monkeypatch.setattr(rp, "search_and_rerank", fake_search_and_rerank, raising=True)
     monkeypatch.setattr(nodes.rag_service, "generate_rag_response", fake_rag, raising=True)
+    monkeypatch.setattr(nodes, "_resolve_product_attribute_query", fake_resolve_attr, raising=True)
     builder._compiled_app = None
 
     import routers.chat as chat

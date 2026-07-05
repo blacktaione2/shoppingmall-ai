@@ -23,6 +23,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
 
 from schemas.intent_schema import IntentResult, IntentType, coerce_intent_result
+from schemas.product_query_schema import ProductAttributeQuery
 from graph.state import ShoppingState
 from graph.llm import (
     get_main_llm,
@@ -212,74 +213,39 @@ def _price_mentioned_exactly(price, text: str) -> bool:
 
 # [일반화] 가격뿐 아니라 재고 재질문("그거 재고 있어?")도 같은 방식으로 처리한다.
 # 새 속성이 필요하면 이 딕셔너리에 항목만 추가하면 된다.
-_ATTRIBUTE_MARKERS = {
-    "price": ("얼마", "가격"),
-    "stock": ("재고", "남았"),
-    "name": ("뭐였", "뭐지", "뭐야", "무엇"),
-}
+async def _resolve_product_attribute_query(question: str, history: list[dict]):
+    """LLM 구조화 출력으로 "특정 상품의 가격/재고를 묻는 질문인지" 판단한다.
 
+    [설계 변경] 기존 텍스트/토큰 매칭 방식은 카탈로그에 같은 단어를 공유하는
+    상품이 있거나(예: "오버핏"이 두 상품 이름에 공통으로 들어감) 히스토리가
+    비어있는 경우 등에서 계속 깨졌다. LLM이 실제 상품 카탈로그 전체를 보고
+    직접 판단하게 하면 이런 부류의 문제가 구조적으로 사라진다.
 
-def _detect_attribute_reference(question: str) -> str | None:
-    """'방금 말한 거 얼마야?'/'재고 있어?' 처럼 직전 발화 속 단일 상품의
-    특정 속성을 되묻는 질문인지 판단한다. 속성어만 있으면 되고 "방금"/"아까"
-    같은 참조어는 없어도 된다 — classify_node 가 이미 카테고리 등 구체적
-    조건이 있으면 STRUCTURED_QUERY 로 보내므로, 여기 도달했다면 속성어만
-    있어도 사실상 "이전에 언급된 상품"을 가리키는 질문으로 좁혀져 있다.
-    해당하면 속성 키("price"/"stock")를, 아니면 None 을 반환한다.
-    """
-    for attribute, markers in _ATTRIBUTE_MARKERS.items():
-        if any(m in question for m in markers):
-            return attribute
-    return None
-
-
-def _match_last_bot_turn_products(history: list[dict]) -> list[dict]:
-    """전체 히스토리가 아니라 '가장 최근 봇 발화 1개'에서만 상품을 추출.
-
-    [비교 경로(_match_history_products)와의 차이] 비교 질문("그 중 제일 싼 건")은
-    여러 턴에 걸쳐 언급된 후보 전체가 대상이지만, 단일 참조 질문("방금 말한 거")은
-    바로 직전 봇 발화 하나만 봐야 한다 — 그렇지 않으면 훨씬 이전 턴의 상품과
-    헷갈릴 수 있다.
-    """
-    bot_turns = [h.get("text", "") for h in history if h.get("role") == "bot"]
-    if not bot_turns:
-        return []
-    all_products = fetch_all_products()
-    # [버그 수정] 가격도 같이 언급된 상품만 인정한다(비교 경로와 동일 이유).
-    # [일반화] 여기서는 stock>0 필터를 두지 않는다 — 비교 경로(_match_history_products)와
-    # 달리, 단일 참조는 "그 상품이 지금 품절인지"를 묻는 재고 질문의 정답 자체일 수
-    # 있어서 미리 걸러내면 안 된다(그 사이 품절됐어도 정확히 "품절"이라고 답해야 함).
-    return [p for p in all_products
-            if p["product_name"] in bot_turns[-1]
-            and _price_mentioned_exactly(p["price"], bot_turns[-1])]
-
-
-def _find_referenced_product(question: str, history: list[dict]) -> dict | None:
-    """참조 질문(가격/재고/이름 확인)이 가리키는 상품 하나를 결정적으로 찾는다.
-
-    [버그 수정] 기존엔 "직전 봇 발화"만 보고 판단해서, 거기에 그 상품 언급이
-    아예 없으면(예: "방금 말한 상품이 뭐지" 자체엔 상품명이 없으니 당연히
-    없음, 또는 최초 오분류로 엉뚱한 상품이 언급된 경우) 통째로 못 찾았다.
-    우선순위:
-      1) 질문 자체에 명시된 상품명(가장 확실한 신호, 히스토리 상태와 무관)
-      2) 직전 봇 발화에 언급된 상품(1)에서 질문 언급으로 우선 좁힘)
-    하나로 안 좁혀지면 None.
+    반환: (target_product: dict | None, attribute: "price"|"stock"|None)
     """
     all_products = fetch_all_products()
-    named = [p for p in all_products
-             if any(tok in question for tok in p["product_name"].split() if len(tok) >= 2)]
-    if len(named) == 1:
-        return named[0]
-
-    recent = _match_last_bot_turn_products(history)
-    if len(recent) == 1:
-        return recent[0]
-    if len(recent) > 1 and named:
-        named_ids = {p["product_id"] for p in named}
-        narrowed = [p for p in recent if p.get("product_id") in named_ids]
-        if len(narrowed) == 1:
-            return narrowed[0]
-    return None
+    catalog_names = "\n".join(f"- {p['product_name']}" for p in all_products)
+    llm = get_intent_llm(temperature=0.0)
+    structured_llm = llm.with_structured_output(ProductAttributeQuery)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         f"다음은 실제 판매 중인 상품 목록이다:\n{catalog_names}\n\n"
+         "대화 맥락과 현재 질문을 보고, 사용자가 이 목록 중 특정 상품 하나의 "
+         "가격 또는 재고를 묻고 있는지 판단해라. product_name은 반드시 위 "
+         "목록의 이름과 정확히 일치해야 한다. 확실하지 않으면 "
+         "is_asking_about_specific_product를 false로 반환해라."),
+        MessagesPlaceholder("history"),
+        ("human", "{question}"),
+    ])
+    result: ProductAttributeQuery = await (prompt | structured_llm).ainvoke({
+        "question": question, "history": history_to_messages(history),
+    })
+    if not result.is_asking_about_specific_product:
+        return None, None
+    target = None
+    if result.product_name:
+        target = next((p for p in all_products if p["product_name"] == result.product_name), None)
+    return target, result.attribute
 
 
 SEMANTIC_TOP_K = 4
@@ -317,34 +283,26 @@ async def semantic_node(state: ShoppingState) -> dict:
                       f"{target['product_name']}({_format_price(target['price'])})이에요.")
             return {"rag_hits": [_to_rag_hit(p) for p in mentioned], "raw_answer": answer}
 
-    # [정확도 보강] "방금 말한 거 얼마야?" 처럼 직전 발화 속 단일 상품을 재확인하는
-    # 질문도 임베딩 검색(질문 자체가 상품명과 무관해 엉뚱한 상품을 끌고 올 수 있음)
-    # 대신 직전 봇 발화에서 결정적으로 추출한다. 상품이 2개 이상 언급돼 모호하면
-    # 억지로 추측하지 않고 기존 경로로 안전하게 폴백한다.
-    attribute = _detect_attribute_reference(question)
-    if not superlative and attribute:
-        target = _find_referenced_product(question, history)
-        logger.info(
-            "참조 상품 탐색: question=%r attribute=%s history_len=%d target=%s",
-            question, attribute, len(history),
-            target.get("product_name") if target else None,
-        )
-        if target is not None:
-            if attribute == "price":
-                answer = (f"방금 말씀드린 상품은 {target['product_name']}이고, "
-                          f"가격은 {_format_price(target['price'])}입니다.")
-            elif attribute == "stock":
-                stock = target.get("stock", 0)
-                answer = (f"{target['product_name']}은 현재 품절이에요." if stock <= 0
-                          else f"{target['product_name']}은 현재 재고 {stock}개 있어요.")
-            else:  # "name"
-                answer = f"방금 말씀드린 상품은 {target['product_name']}입니다."
-            return {"rag_hits": [_to_rag_hit(target)], "raw_answer": answer}
-        # [버그 수정] 상품이 특정 안 되면(0개/여러 개) 검색으로 폴백하지 않는다.
-        # "재고 있어?" 같은 참조 질문 자체가 특정 상품을 가리키는 것이지 새로운
-        # 상품 검색이 아니라서, 폴백 검색이 질문과 무관한(때로는 품절) 상품을
-        # 끌고 와 답하는 문제가 있었다. 대신 바로 되묻는다.
-        return {"rag_hits": [], "raw_answer": "어떤 상품을 말씀하시는지 다시 알려주시겠어요?"}
+    # [정확도 보강] "방금 말한 거 얼마야?"/"오버핏 양털 후리스 재고 있어?" 처럼
+    # 특정 상품 하나의 가격/재고를 묻는 질문은, LLM이 실제 카탈로그를 보고
+    # 직접 판단하게 한다(텍스트/토큰 매칭은 카탈로그에 겹치는 단어가 있거나
+    # 히스토리가 비어있을 때 계속 깨졌었다).
+    if not superlative:
+        target, attribute = await _resolve_product_attribute_query(question, history)
+        if attribute is not None:
+            if target is not None:
+                if attribute == "price":
+                    answer = (f"{target['product_name']}의 가격은 "
+                              f"{_format_price(target['price'])}입니다.")
+                else:  # "stock"
+                    stock = target.get("stock", 0)
+                    answer = (f"{target['product_name']}은 현재 품절이에요." if stock <= 0
+                              else f"{target['product_name']}은 현재 재고 {stock}개 있어요.")
+                return {"rag_hits": [_to_rag_hit(target)], "raw_answer": answer}
+            # [버그 수정] 가격/재고 질문인 건 맞는데 어떤 상품인지 특정 못 하면
+            # (모호하거나 카탈로그에 없는 이름), 검색으로 폴백하지 않고 바로
+            # 되묻는다 — 그런 질문 자체가 새 상품 검색이 아니기 때문이다.
+            return {"rag_hits": [], "raw_answer": "어떤 상품을 말씀하시는지 다시 알려주시겠어요?"}
 
     # [RAG 고도화] 검색+재랭킹 공통 파이프라인 사용 (라우터/Agent 일관성)
     # 로그인 회원이면 member_id 를 넘겨 취향 벡터 혼합(개인화 ON 시).
