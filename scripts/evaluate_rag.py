@@ -132,6 +132,9 @@ def _run_ragas(rows: list[dict]):
         from datasets import Dataset
         from ragas import evaluate
         from ragas.metrics import faithfulness, answer_relevancy, context_precision
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     except ImportError as e:
         logger.error(
             "RAGAs 미설치. 평가 전용 의존성을 설치하세요:\n"
@@ -155,9 +158,16 @@ def _run_ragas(rows: list[dict]):
 
     ds = Dataset.from_list(enriched)
     logger.info("RAGAs 평가 시작 (%d 행)...", len(enriched))
+    # [버그 수정] llm/embeddings 를 안 넘기면 RAGAs 가 내부 기본값으로 시도하다
+    # 조용히 실패해 NaN 을 반환하는 경우가 있다(faithfulness/answer_relevancy 는
+    # LLM 판정, answer_relevancy/context_precision 은 임베딩 유사도가 필요).
+    evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-5.4-mini"))
+    evaluator_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
     result = evaluate(
         ds,
         metrics=[faithfulness, answer_relevancy, context_precision],
+        llm=evaluator_llm,
+        embeddings=evaluator_embeddings,
     )
     return result
 
