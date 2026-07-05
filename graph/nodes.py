@@ -55,15 +55,20 @@ async def classify_node(state: ShoppingState) -> dict:
     실패 시 기존 동작과 동일하게 SMALL_TALK(confidence=0.0) 폴백.
     """
     question = state["question"]
+    history = state.get("history", [])
     try:
         llm = get_intent_llm(temperature=0.0)
         structured_llm = llm.with_structured_output(IntentResult)
         prompt = ChatPromptTemplate.from_messages([
             ("system", INTENT_SYSTEM_PROMPT),
+            MessagesPlaceholder("history"),
             ("human", "{question}"),
         ])
         chain = prompt | structured_llm
-        result: IntentResult = await chain.ainvoke({"question": question})
+        result: IntentResult = await chain.ainvoke({
+            "question": question,
+            "history": history_to_messages(history),
+        })
         logger.info(
             "intent=%s confidence=%.2f question=%s",
             result.intent.value, result.confidence, question,

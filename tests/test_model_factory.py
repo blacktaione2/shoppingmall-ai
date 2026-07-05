@@ -18,8 +18,8 @@ def test_default_model_mapping(monkeypatch):
     from graph.model_factory import resolve_model_name, ModelRole
     assert resolve_model_name("openai", ModelRole.MAIN) == "gpt-5.4"
     assert resolve_model_name("openai", ModelRole.INTENT) == "gpt-5.4-mini"
-    # gemini-2.5-flash → gemini-3.1-flash 교체
-    assert resolve_model_name("gemini", ModelRole.MAIN) == "gemini-3.1-flash"
+    # gemini-2.5-flash → gemini-3.1-flash-lite 교체(가성비 포지션 대표)
+    assert resolve_model_name("gemini", ModelRole.MAIN) == "gemini-3.1-flash-lite"
     assert resolve_model_name("anthropic", ModelRole.MAIN) == "claude-sonnet-4-6"
     assert resolve_model_name("anthropic", ModelRole.INTENT) == "claude-haiku-4-5-20251001"
     # deepseek 신규
