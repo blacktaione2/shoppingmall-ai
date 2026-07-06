@@ -268,6 +268,13 @@ def build_structured_query(
         keywords = [keywords]
     cleaned = [kw.strip() for kw in keywords if kw and kw.strip()] if keywords else []
     cleaned = cleaned[:_STRUCTURED_KEYWORD_MAX]
+    # [버그 수정] LLM이 category("상의")를 keywords에도 중복 추출하는 경우,
+    # PRODUCT_NAME에는 카테고리명 자체가 등장하지 않아 AND 결합 시 결과가
+    # 0건으로 사라진다("5만원 이하 상의" → 카테고리+가격은 맞는데 0건).
+    # category와 정확히 같은 키워드만 제거(부분/포함 매칭은 다른 키워드를
+    # 잘못 지울 위험이 있어 넣지 않음).
+    if category:
+        cleaned = [kw for kw in cleaned if kw != category]
     if cleaned:
         kw_conditions = []
         for i, kw in enumerate(cleaned):

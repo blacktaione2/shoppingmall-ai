@@ -213,6 +213,21 @@ def _price_mentioned_exactly(price, text: str) -> bool:
 
 # [일반화] 가격뿐 아니라 재고 재질문("그거 재고 있어?")도 같은 방식으로 처리한다.
 # 새 속성이 필요하면 이 딕셔너리에 항목만 추가하면 된다.
+def _josa_eun_neun(word: str) -> str:
+    """단어 마지막 글자의 받침(종성) 유무에 따라 '은'/'는'을 반환한다.
+
+    한글 완성형(가~힣) 범위 밖의 문자로 끝나면(영문/숫자 등) 판별이 불가능하므로
+    "은(는)"으로 안전하게 폴백한다(현재 카탈로그엔 해당 상품명이 없음).
+    """
+    if not word:
+        return "은(는)"
+    last_char = word[-1]
+    if "가" <= last_char <= "힣":
+        has_batchim = (ord(last_char) - ord("가")) % 28 != 0
+        return "은" if has_batchim else "는"
+    return "은(는)"
+
+
 async def _resolve_product_attribute_query(question: str, history: list[dict]):
     """LLM 구조화 출력으로 "특정 상품의 가격/재고를 묻는 질문인지" 판단한다.
 
@@ -301,8 +316,10 @@ async def semantic_node(state: ShoppingState) -> dict:
                               f"{_format_price(target['price'])}입니다.")
                 else:  # "stock"
                     stock = target.get("stock", 0)
-                    answer = (f"{target['product_name']}은 현재 품절이에요." if stock <= 0
-                              else f"{target['product_name']}은 현재 재고 {stock}개 있어요.")
+                    name = target["product_name"]
+                    josa = _josa_eun_neun(name)
+                    answer = (f"{name}{josa} 현재 품절이에요." if stock <= 0
+                              else f"{name}{josa} 현재 재고 {stock}개 있어요.")
                 return {"rag_hits": [_to_rag_hit(target)], "raw_answer": answer}
             # [버그 수정] 가격/재고 질문인 건 맞는데 어떤 상품인지 특정 못 하면
             # (모호하거나 카탈로그에 없는 이름), 검색으로 폴백하지 않고 바로
