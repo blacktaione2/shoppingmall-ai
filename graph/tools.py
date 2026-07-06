@@ -39,6 +39,7 @@ from langgraph.types import Command, interrupt
 from schemas.intent_schema import IntentResult, IntentType, Entities
 from database.oracle_db import search_products_structured, fetch_orders, fetch_order_by_id
 from services import rag_service
+from services import notification_service
 from pipeline.faq_handler import _search_faq_sync
 
 # 기존 노드의 포맷터를 재사용 (중복 구현 방지)
@@ -260,6 +261,8 @@ async def request_refund(
     #        DB 쓰기를 하지 않으므로 스키마/Spring Boot 에 영향이 없다.
     logger.info("환불 신청 접수: member_id=%s order_id=%s reason=%r",
                 member_id, oid, reason)
+    # 관리자 알림(best-effort) — 실패해도 사용자 응답(접수 완료 안내)은 그대로 진행.
+    await notification_service.send_refund_admin_email(oid, member_id, reason)
     suffix = f" (사유: {reason})" if reason else ""
     return (
         f"주문 {oid}에 대한 환불 신청이 접수되었습니다{suffix}. "
