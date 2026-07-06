@@ -480,11 +480,29 @@ _COMPLAINT_SYSTEM_PROMPT = (
 _COMPLAINT_FALLBACK = (
     "불편을 드려 죄송합니다. 자세한 사항은 고객센터(1234-5678)로 문의해 주세요."
 )
+_REFUND_NOTICE_MSG = (
+    "고객님의 환불 문의를 접수했습니다. 담당자에게 전달드렸으니 확인 후 "
+    "순차적으로 연락드리겠습니다."
+)
 
 
 async def complaint_node(state: ShoppingState) -> dict:
     """gpt-5.4 감정 공감 응답 (LCEL 체인). 멀티턴 history 주입."""
     question = state["question"]
+
+    # [환불 신청 관리자 알림] 로그인 회원이 "환불"을 명시적으로 언급하면 승인 절차 없이
+    # 바로 관리자에게 이메일로 알린다(best-effort, 실패해도 사용자 응답엔 영향 없음).
+    # /chat/agent 전용 request_refund()(Human-in-the-loop 승인)와 달리, 위젯(/chat/stream)엔
+    # interrupt 재개 프로토콜이 없어 승인 절차 없이 원문 그대로 전달하는 단순화 버전.
+    # 주문 특정 없이 회원 ID + 질문 원문만 보낸다(실제 어떤 주문인지는 관리자가 확인).
+    # [고정 문구] 실제로 메일이 갔다는 사실과 답변 내용이 항상 일치해야 하므로, 이 경우는
+    # LLM 자유생성을 거치지 않고 고정 문구로 즉답한다(가격 비교/재고 조회와 같은 원칙).
+    if not state.get("is_guest") and state.get("member_id") and "환불" in question:
+        await notification_service.send_refund_admin_email(
+            "미상(챗봇 문의)", state["member_id"], question,
+        )
+        return {"raw_answer": _REFUND_NOTICE_MSG}
+
     history = state.get("history", [])
     emotion = coerce_intent_result(state["intent_result"]).emotion or "불편함"
 
@@ -501,16 +519,6 @@ async def complaint_node(state: ShoppingState) -> dict:
         "question": question,
     })
     answer = (answer or "").strip() or _COMPLAINT_FALLBACK
-
-    # [환불 신청 관리자 알림] 로그인 회원이 "환불"을 명시적으로 언급하면 승인 절차 없이
-    # 바로 관리자에게 이메일로 알린다(best-effort, 실패해도 사용자 응답엔 영향 없음).
-    # /chat/agent 전용 request_refund()(Human-in-the-loop 승인)와 달리, 위젯(/chat/stream)엔
-    # interrupt 재개 프로토콜이 없어 승인 절차 없이 원문 그대로 전달하는 단순화 버전.
-    # 주문 특정 없이 회원 ID + 질문 원문만 보낸다(실제 어떤 주문인지는 관리자가 확인).
-    if not state.get("is_guest") and state.get("member_id") and "환불" in question:
-        await notification_service.send_refund_admin_email(
-            "미상(챗봇 문의)", state["member_id"], question,
-        )
 
     return {"raw_answer": answer}
 
