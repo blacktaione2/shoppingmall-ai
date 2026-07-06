@@ -39,6 +39,7 @@ from pipeline.intent_classifier import INTENT_SYSTEM_PROMPT
 # GPT 미사용 핸들러 로직 재사용
 from database.oracle_db import search_products_structured
 from services import rag_service
+from services import notification_service
 from pipeline.faq_handler import _search_faq_sync
 from database.oracle_db import fetch_orders, fetch_order_by_id, fetch_all_products
 
@@ -500,6 +501,17 @@ async def complaint_node(state: ShoppingState) -> dict:
         "question": question,
     })
     answer = (answer or "").strip() or _COMPLAINT_FALLBACK
+
+    # [환불 신청 관리자 알림] 로그인 회원이 "환불"을 명시적으로 언급하면 승인 절차 없이
+    # 바로 관리자에게 이메일로 알린다(best-effort, 실패해도 사용자 응답엔 영향 없음).
+    # /chat/agent 전용 request_refund()(Human-in-the-loop 승인)와 달리, 위젯(/chat/stream)엔
+    # interrupt 재개 프로토콜이 없어 승인 절차 없이 원문 그대로 전달하는 단순화 버전.
+    # 주문 특정 없이 회원 ID + 질문 원문만 보낸다(실제 어떤 주문인지는 관리자가 확인).
+    if not state.get("is_guest") and state.get("member_id") and "환불" in question:
+        await notification_service.send_refund_admin_email(
+            "미상(챗봇 문의)", state["member_id"], question,
+        )
+
     return {"raw_answer": answer}
 
 
