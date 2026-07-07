@@ -76,19 +76,19 @@ async def open_checkpointer():
 
     logger.info("REDIS_URL 감지 → AsyncRedisSaver 사용(영속화)")
 
-    # [개선 — 게스트 thread 누적 대비 TTL]
-    #   게스트 요청은 매번 'guest-{uuid4}' 1회성 thread_id 로 invoke 되므로,
-    #   Redis 영속화를 켜면 재조회되지 않는 thread 가 계속 쌓일 수 있다.
-    #   langgraph-checkpoint-redis 0.5.0 의 TTL 적용은 from_conn_string 의
-    #   ttl 인자 형식이 버전에 민감하므로(잘못된 키 → 기동 실패), 실제 Redis 를
-    #   켜는 시점(REDIS_URL 설정)에 아래 형태로 검증 후 활성화할 것:
-    #       cm = AsyncRedisSaver.from_conn_string(
-    #               url, ttl={"default_ttl": 60, "refresh_on_read": True})
-    #   (단위/키 이름은 설치된 패키지 버전의 docstring 으로 반드시 확인)
-    #   현 시점 REDIS_URL 은 비어 있어 MemorySaver 폴백이라 이 경로는 미사용.
+    # [TTL 적용 — 고아 스레드 자동 정리]
+    #   게스트는 매번 'guest-{uuid4}' 1회성 thread_id 로 invoke 되어 재조회가 절대
+    #   없고, 로그인 회원도 재로그인 시 chat_token(thread_id)이 새로 발급되어 이전
+    #   thread 는 고아가 된다. 둘 다 TTL 없이는 Redis 에 무기한 쌓인다.
+    #   default_ttl 은 '분' 단위(langgraph-checkpoint-redis==0.5.0 소스로 직접 확인 —
+    #   내부에서 default_ttl * 60 으로 초 변환). refresh_on_read=True 로 조회할 때마다
+    #   TTL 을 갱신하므로 "마지막 활동으로부터 N분간 재조회 없으면 삭제" 의미가 되어,
+    #   활성 세션은 안 지워지고 게스트 1회성/로그아웃 후 고아 스레드만 자연 정리된다.
     # from_conn_string 은 async context manager 를 돌려준다.
     # lifespan 이 사는 동안 열어둬야 하므로 __aenter__/__aexit__ 를 수동 제어한다.
-    cm = AsyncRedisSaver.from_conn_string(url)
+    cm = AsyncRedisSaver.from_conn_string(
+        url, ttl={"default_ttl": 1440, "refresh_on_read": True},  # 1440분 = 24시간
+    )
     saver = await cm.__aenter__()
 
     try:
