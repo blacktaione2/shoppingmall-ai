@@ -231,7 +231,13 @@ async def search_and_rerank(query: str, top_n: int = 4, member_id: int | None = 
     # 문제가 있었다. fetch_all_products() 가 품절 상품도 전부 인덱싱하는 건
     # 의도된 설계(그 함수 독스트링 참고: "검색 시 metadata로 필터링")이고,
     # 그 필터링이 여기 빠져 있었다.
-    candidates = [c for c in candidates if c.get("metadata", {}).get("stock", 1) > 0]
+    # [판매중단 제외] 기존 재고 0 필터와 같은 자리. 과거 색인된 상품은 status
+    # 메타데이터가 없을 수 있어 기본값 "ACTIVE"로 하위호환 유지.
+    candidates = [
+        c for c in candidates
+        if c.get("metadata", {}).get("stock", 1) > 0
+        and c.get("metadata", {}).get("status", "ACTIVE") == "ACTIVE"
+    ]
 
     logger.info("SEMANTIC 최종 후보 %d건 (재랭킹=%s, CLIP=%s, 질문=%r)",
                 len(candidates), rerank_service.is_rerank_enabled(),

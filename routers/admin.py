@@ -101,6 +101,9 @@ async def reindex_product(req: ReindexRequest) -> SyncResponse:
         "price":        _to_float(row.get("price")),
         "description":  str(row.get("description")) if row.get("description") else "",
         "stock":        int(row.get("stock")) if row.get("stock") is not None else 0,
+        # [판매중단 필터용] SEMANTIC_SEARCH 최종 후보 단계(rag_pipeline)에서 재고
+        # 필터와 함께 이 값으로 판매중단 상품을 제외한다.
+        "status":       row.get("status") or "ACTIVE",
         # 검색 결과 카드용 이미지 URL(텍스트 컬렉션 메타에 반영).
         # 이미지(CLIP) 임베딩 자체의 재색인은 무거우므로 여기서 하지 않고
         # scripts/index_products_image.py 로 오프라인 처리한다(메모리 보호).

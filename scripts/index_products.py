@@ -99,6 +99,9 @@ async def main():
             "price":        _to_float(row.get("price")),   # Decimal → float 변환
             "description":  str(row.get("description")) if row.get("description") else "",
             "stock":        int(row.get("stock")) if row.get("stock") is not None else 0,
+            # [판매중단 필터용] SEMANTIC_SEARCH 최종 후보 단계(rag_pipeline)에서
+            # 재고 필터와 함께 이 값으로 판매중단 상품을 제외한다.
+            "status":       row.get("status") or "ACTIVE",
             # 검색 결과 카드(프론트)에서 상품 이미지를 띄우기 위한 URL.
             # CLIP 검색을 안 켜도(텍스트 검색만) 이 필드로 이미지가 표시된다.
             "image_url":    row.get("image_url") or "",
