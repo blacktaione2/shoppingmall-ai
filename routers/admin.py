@@ -388,3 +388,15 @@ document.getElementById('key').addEventListener('keydown', e=>{ if(e.key==='Ente
 </body>
 </html>
 """
+
+
+# [임시 디버그 — Redis 체크포인터 TTL 미적용 원인 조사용]
+# 확인 끝나면 제거할 것. 실행 중인 실제 checkpointer 인스턴스의 ttl_config 를 그대로 노출한다.
+@router.get("/debug/checkpointer", dependencies=[Depends(verify_admin_key)])
+async def debug_checkpointer():
+    from graph.builder import get_checkpointer
+    cp = get_checkpointer()
+    return {
+        "type": type(cp).__name__,
+        "ttl_config": getattr(cp, "ttl_config", "속성 없음"),
+    }
