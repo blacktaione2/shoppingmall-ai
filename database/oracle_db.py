@@ -286,7 +286,7 @@ def build_structured_query(
     order_by = _resolve_order_by(sort_by)
 
     sql = (
-        "SELECT PRODUCT_ID, PRODUCT_NAME, CATEGORY, PRICE, DESCRIPTION, STOCK "
+        "SELECT PRODUCT_ID, PRODUCT_NAME, CATEGORY, PRICE, DESCRIPTION, STOCK, IMAGE_URL "
         "FROM PRODUCT"
     )
     if where_clauses:

@@ -125,7 +125,7 @@ class TestEventStream:
         assert text == "안녕하세요"
         # done 메타데이터
         done = parsed[-1][1]
-        assert done == {"intent": "SMALL_TALK", "confidence": 0.91}
+        assert done == {"intent": "SMALL_TALK", "confidence": 0.91, "sources": None}
 
     def test_error_event_on_pipeline_failure(self):
         events = _collect(event_stream(_fake_pipeline_fail, None, delay=0))

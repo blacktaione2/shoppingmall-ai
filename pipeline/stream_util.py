@@ -79,10 +79,11 @@ async def event_stream(
            사용자가 재로그인 등 행동을 취해야 하는 상황이라 구분이 필요하다.
            그 외 모든 예외는 기존과 동일하게 일반 메시지로 감춘다.
       2) result.answer 를 청크로 분할 → event: chunk 로 순차 전송 (청크당 delay 만큼 대기)
-      3) 마지막에 event: done 으로 메타데이터(intent/confidence/chat_id) 전송
+      3) 마지막에 event: done 으로 메타데이터(intent/confidence/sources/chat_id) 전송
 
     :param pipeline_fn: async callable. await pipeline_fn(request) 가
                         .answer / .intent / .confidence 속성을 가진 객체를 반환해야 함.
+                        .sources 는 선택 속성(없으면 done 이벤트의 sources 는 null).
                         (실제 ChatResponse 에는 chat_id 가 없어 done 이벤트에도 포함하지 않음)
     :param request:     pipeline_fn 에 그대로 넘길 요청 객체(ChatRequestDto)
     :param chunk_size:  청크당 글자 수(기본 3)
@@ -104,10 +105,12 @@ async def event_stream(
         if delay > 0:
             await asyncio.sleep(delay)
 
+    sources = getattr(result, "sources", None)
     yield sse_event(
         "done",
         {
             "intent": result.intent,
             "confidence": result.confidence,
+            "sources": [s.model_dump() for s in sources] if sources else None,
         },
     )

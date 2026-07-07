@@ -137,7 +137,12 @@ async def structured_node(state: ShoppingState) -> dict:
     header = f"🛍️ 조건에 맞는 상품 {len(products)}개를 찾았어요!"
     lines = [_format_product_line(i + 1, p) for i, p in enumerate(products)]
     body = "\n\n".join(lines)
-    return {"raw_answer": f"{header}\n\n{body}"}
+    # [상품 링크] chat.py가 sources(상품 상세 링크·썸네일)를 만들 때 쓰도록
+    # rag_hits 재사용(semantic_node와 동일한 변환 함수/필드).
+    return {
+        "rag_hits": [_to_rag_hit(p) for p in products],
+        "raw_answer": f"{header}\n\n{body}",
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -191,9 +196,11 @@ def _to_rag_hit(product: dict) -> dict:
         "id": product.get("product_id"),
         "document": product.get("description") or "",
         "metadata": {
+            "product_id": product.get("product_id"),
             "product_name": product.get("product_name"),
             "category": product.get("category"),
             "price": product.get("price"),
+            "image_url": product.get("image_url") or "",
         },
         "distance": 0.0,
     }
