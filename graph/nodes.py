@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 # ════════════════════════════════════════════════════════════════════════
 # 1) classify_node — 인텐트 분류 (gpt-5.4-mini + Structured Output)
 # ════════════════════════════════════════════════════════════════════════
+# [되묻기] 공백/문장부호만 있는 질문(".", "...", "?" 등)은 LLM에 판단을 맡기면
+# 이전 대화 맥락을 과도하게 끌어와 직전 질문을 그대로 반복하는 문제가 있었다
+# (예: "5만원 이하 상의 보여줘" 다음 "."을 보내면 같은 STRUCTURED_QUERY가 반복됨).
+# LLM 호출 없이 결정적으로 차단한다.
+_TRIVIAL_QUESTION_RE = re.compile(r"^[\s.,!?~・…]*$")
+
+
 async def classify_node(state: ShoppingState) -> dict:
     """사용자 질문을 6개 인텐트 중 하나로 분류한다.
 
@@ -59,6 +66,12 @@ async def classify_node(state: ShoppingState) -> dict:
     """
     question = state["question"]
     history = state.get("history", [])
+
+    if _TRIVIAL_QUESTION_RE.match(question):
+        return {"intent_result": IntentResult(
+            intent=IntentType.SMALL_TALK, confidence=0.0,
+        ).model_dump(mode="json")}
+
     try:
         llm = get_intent_llm(temperature=0.0)
         structured_llm = llm.with_structured_output(IntentResult)
@@ -347,7 +360,17 @@ async def semantic_node(state: ShoppingState) -> dict:
         return {"rag_hits": [], "raw_answer": _SEMANTIC_NO_HIT_MSG}
 
     answer = await rag_service.generate_rag_response(question, hits, history=history)
-    return {"rag_hits": hits, "raw_answer": answer}
+    # [상품 카드 정확도] 검색 후보(top-4)가 전부 답변 문장에 언급된다는 보장이
+    # 없다(개인화 취향 벡터 혼합 등으로 후보에 들어왔지만 LLM이 실제로는 언급을
+    # 안 한 상품도 있음). 텍스트에 실제로 상품명이 등장하는 후보만 sources/가드
+    # 검증 대상으로 남긴다 — _match_history_products 와 동일한 "실제 언급 확인"
+    # 원칙을 여기도 적용.
+    mentioned_hits = [
+        h for h in hits
+        if h.get("metadata", {}).get("product_name")
+        and h["metadata"]["product_name"] in answer
+    ]
+    return {"rag_hits": mentioned_hits, "raw_answer": answer}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -546,6 +569,26 @@ _SMALL_TALK_SYSTEM_PROMPT = (
     "답변은 1~2문장으로 짧게 작성하세요."
 )
 _SMALL_TALK_FALLBACK = "안녕하세요! 무엇을 도와드릴까요?"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# clarify_node — 인텐트 분류 confidence 낮음 (GPT 미사용, 고정 되묻기)
+# ════════════════════════════════════════════════════════════════════════
+_CLARIFY_MSG = (
+    "질문을 조금 더 구체적으로 말씀해주시겠어요? "
+    "예: '5만원 이하 신발 보여줘', '겨울에 따뜻한 옷 추천해줘', "
+    "'내 주문 배송 상태 알려줘'"
+)
+
+
+async def clarify_node(state: ShoppingState) -> dict:
+    """분류 confidence 가 낮을 때(route_by_intent) 도달하는 고정 되묻기 응답.
+
+    LLM 호출 없이 고정 문구로 즉답한다 — 애매한 입력에 LLM이 이전 대화를
+    과도하게 끌어와 엉뚱하게 답하는 것보다, 사용자에게 명확히 되묻는 편이
+    안전하고 결정적이다.
+    """
+    return {"raw_answer": _CLARIFY_MSG}
 
 
 async def small_talk_node(state: ShoppingState) -> dict:

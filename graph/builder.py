@@ -13,7 +13,8 @@ LangGraph StateGraph 조립 + compile.
       ├─ order      ──┤
       ├─ complaint  ──┤
       ├─ small_talk ──┤
-      └─ guest_block ─┤
+      ├─ guest_block ─┤
+      └─ clarify    ──┤
                       ↓
                    guard
                       ↓
@@ -114,6 +115,7 @@ def build_graph():
     builder.add_node("complaint", nodes.complaint_node)
     builder.add_node("small_talk", nodes.small_talk_node)
     builder.add_node("guest_block", nodes.guest_block_node)
+    builder.add_node("clarify", nodes.clarify_node)
     builder.add_node("guard", nodes.guard_node)
     builder.add_node("append_message", nodes.append_message_node)
 
@@ -132,13 +134,14 @@ def build_graph():
             "complaint": "complaint",
             "small_talk": "small_talk",
             "guest_block": "guest_block",
+            "clarify": "clarify",
         },
     )
 
     # 모든 핸들러 노드 → guard 합류
     for handler in (
         "structured", "semantic", "faq", "order",
-        "complaint", "small_talk", "guest_block",
+        "complaint", "small_talk", "guest_block", "clarify",
     ):
         builder.add_edge(handler, "guard")
 
