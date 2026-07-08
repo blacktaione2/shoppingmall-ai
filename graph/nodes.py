@@ -534,8 +534,14 @@ async def complaint_node(state: ShoppingState) -> dict:
     # [고정 문구] 실제로 메일이 갔다는 사실과 답변 내용이 항상 일치해야 하므로, 이 경우는
     # LLM 자유생성을 거치지 않고 고정 문구로 즉답한다(가격 비교/재고 조회와 같은 원칙).
     if not state.get("is_guest") and state.get("member_id") and "환불" in question:
-        await notification_service.send_refund_admin_email(
-            "미상(챗봇 문의)", state["member_id"], question,
+        await asyncio.gather(
+            notification_service.send_refund_admin_email(
+                "미상(챗봇 문의)", state["member_id"], question,
+            ),
+            notification_service.send_refund_admin_slack(
+                "미상(챗봇 문의)", state["member_id"], question,
+            ),
+            return_exceptions=True,
         )
         return {"raw_answer": _REFUND_NOTICE_MSG}
 
