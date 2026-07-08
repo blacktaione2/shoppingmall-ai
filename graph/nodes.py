@@ -681,15 +681,18 @@ async def append_message_node(state: ShoppingState) -> dict:
       해당 요청 처리 후 폐기된다. 즉 게스트에게는 사실상 no-op 에 가깝다.
       (그래도 그래프 흐름 일관성을 위해 모든 경로가 이 노드를 통과한다.)
 
-    [상품 카드 유지] SEMANTIC_SEARCH 검색 근거(sources)를 AIMessage.additional_kwargs
-      에 함께 실어 checkpointer 에 영속시킨다. 그래야 다른 세션으로 갔다가 돌아오거나
-      로그아웃 후 재로그인해도(= 세션 목록에서 이 대화방을 다시 열어도) 썸네일/상세
-      링크가 그대로 남는다. routers/chat.py 의 sources 부착 조건과 동일하게
-      SEMANTIC_SEARCH 인텐트일 때만 계산한다(그 외엔 매 턴 불필요한 import 방지).
+    [상품 카드 유지] SEMANTIC_SEARCH/STRUCTURED_QUERY 검색 근거(sources)를
+      AIMessage.additional_kwargs 에 함께 실어 checkpointer 에 영속시킨다. 그래야
+      다른 세션으로 갔다가 돌아오거나 로그아웃 후 재로그인해도(= 세션 목록에서
+      이 대화방을 다시 열어도) 썸네일/상세 링크가 그대로 남는다. routers/chat.py
+      의 sources 부착 조건과 동일하게 유지해야 한다(둘이 어긋나면 "즉시 응답엔
+      카드가 나오는데 세션 복원엔 빠지는" 불일치가 생김 — 실제로 겪었던 버그).
     """
     rag_hits = state.get("rag_hits") or []
     sources: list[dict] = []
-    if rag_hits and coerce_intent_result(state.get("intent_result")).intent == IntentType.SEMANTIC_SEARCH:
+    if rag_hits and coerce_intent_result(state.get("intent_result")).intent in (
+        IntentType.SEMANTIC_SEARCH, IntentType.STRUCTURED_QUERY,
+    ):
         from graph.rag_pipeline import hits_to_sources
         sources = hits_to_sources(rag_hits)
     return {
