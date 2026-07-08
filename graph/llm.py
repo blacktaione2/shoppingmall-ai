@@ -72,6 +72,11 @@ def history_to_messages(history: list[dict]) -> list[BaseMessage]:
     기존 gpt_service._build_history_messages 와 동일 매핑:
       role == "user" → HumanMessage,  그 외 → AIMessage
     빈 text 는 건너뛴다.
+
+    [상품 카드 유지] item 에 sources 가 있으면 AIMessage.additional_kwargs 에
+    실어 보존한다 — trim_history() 가 이 함수와 messages_to_history() 를
+    왕복시켜 트리밍하므로, 여기서 안 실으면 대화가 길어져 트리밍이 실제로
+    발생하는 순간 살아남은 메시지들의 sources 까지 함께 유실된다.
     """
     messages: list[BaseMessage] = []
     for item in history or []:
@@ -82,7 +87,9 @@ def history_to_messages(history: list[dict]) -> list[BaseMessage]:
         if role == "user":
             messages.append(HumanMessage(content=text))
         else:
-            messages.append(AIMessage(content=text))
+            sources = item.get("sources")
+            kwargs = {"sources": sources} if sources else {}
+            messages.append(AIMessage(content=text, additional_kwargs=kwargs))
     return messages
 
 
@@ -94,6 +101,11 @@ def messages_to_history(messages: list[BaseMessage]) -> list[dict]:
       · HumanMessage → role="user"
       · 그 외(AIMessage 등) → role="bot"
     빈 content 는 건너뛴다.
+
+    [상품 카드 유지] AIMessage.additional_kwargs 에 append_message_node 가 실어둔
+    sources 가 있으면(SEMANTIC_SEARCH 턴) 그대로 함께 반환한다. GET
+    /chat/sessions/{id}/messages 가 이 값을 그대로 클라이언트에 내려줘 과거 대화를
+    다시 열어도 상품 카드가 유지된다. 없으면(HumanMessage 등) 키 자체를 생략한다.
 
     [주의] 노드(complaint/small_talk/semantic)는 history dict 를 받아
            내부에서 다시 history_to_messages 로 변환하는 기존 인터페이스를
@@ -107,7 +119,11 @@ def messages_to_history(messages: list[BaseMessage]) -> list[dict]:
         if not content:
             continue
         role = "user" if isinstance(msg, HumanMessage) else "bot"
-        history.append({"role": role, "text": content})
+        item = {"role": role, "text": content}
+        sources = getattr(msg, "additional_kwargs", {}).get("sources")
+        if sources:
+            item["sources"] = sources
+        history.append(item)
     return history
 
 

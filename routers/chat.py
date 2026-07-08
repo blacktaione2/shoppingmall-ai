@@ -138,7 +138,9 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
             raise HTTPException(status_code=401, detail=_INVALID_TOKEN_MESSAGE)
 
     # 1) 그래프 입력 State + invoke 설정 구성
-    client_history = [item.model_dump() for item in request.history]
+    # exclude_none: HistoryItem.sources 는 보통 None(클라이언트가 안 보냄) → 생략해
+    # 기존 {"role","text"} 뿐인 dict 형태를 그대로 유지(하위호환).
+    client_history = [item.model_dump(exclude_none=True) for item in request.history]
     session_id = None  # 게스트는 None 유지, 로그인은 아래에서 채워짐
 
     if is_guest:

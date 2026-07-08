@@ -94,7 +94,7 @@ async def multi_agent_chat(request: ChatRequest) -> ChatResponse:
     # 1) 입력 구성
     new_message = HumanMessage(content=request.question)
     if is_guest:
-        client_history = [item.model_dump() for item in request.history]
+        client_history = [item.model_dump(exclude_none=True) for item in request.history]
         seed = history_to_messages(client_history)
         init_state = {
             "messages": seed + [new_message],

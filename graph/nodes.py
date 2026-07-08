@@ -49,13 +49,6 @@ logger = logging.getLogger(__name__)
 # ════════════════════════════════════════════════════════════════════════
 # 1) classify_node — 인텐트 분류 (gpt-5.4-mini + Structured Output)
 # ════════════════════════════════════════════════════════════════════════
-# [되묻기] 공백/문장부호만 있는 질문(".", "...", "?" 등)은 LLM에 판단을 맡기면
-# 이전 대화 맥락을 과도하게 끌어와 직전 질문을 그대로 반복하는 문제가 있었다
-# (예: "5만원 이하 상의 보여줘" 다음 "."을 보내면 같은 STRUCTURED_QUERY가 반복됨).
-# LLM 호출 없이 결정적으로 차단한다.
-_TRIVIAL_QUESTION_RE = re.compile(r"^[\s.,!?~・…]*$")
-
-
 async def classify_node(state: ShoppingState) -> dict:
     """사용자 질문을 6개 인텐트 중 하나로 분류한다.
 
@@ -66,12 +59,6 @@ async def classify_node(state: ShoppingState) -> dict:
     """
     question = state["question"]
     history = state.get("history", [])
-
-    if _TRIVIAL_QUESTION_RE.match(question):
-        return {"intent_result": IntentResult(
-            intent=IntentType.SMALL_TALK, confidence=0.0,
-        ).model_dump(mode="json")}
-
     try:
         llm = get_intent_llm(temperature=0.0)
         structured_llm = llm.with_structured_output(IntentResult)
@@ -150,12 +137,7 @@ async def structured_node(state: ShoppingState) -> dict:
     header = f"🛍️ 조건에 맞는 상품 {len(products)}개를 찾았어요!"
     lines = [_format_product_line(i + 1, p) for i, p in enumerate(products)]
     body = "\n\n".join(lines)
-    # [상품 링크] chat.py가 sources(상품 상세 링크·썸네일)를 만들 때 쓰도록
-    # rag_hits 재사용(semantic_node와 동일한 변환 함수/필드).
-    return {
-        "rag_hits": [_to_rag_hit(p) for p in products],
-        "raw_answer": f"{header}\n\n{body}",
-    }
+    return {"raw_answer": f"{header}\n\n{body}"}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -209,11 +191,9 @@ def _to_rag_hit(product: dict) -> dict:
         "id": product.get("product_id"),
         "document": product.get("description") or "",
         "metadata": {
-            "product_id": product.get("product_id"),
             "product_name": product.get("product_name"),
             "category": product.get("category"),
             "price": product.get("price"),
-            "image_url": product.get("image_url") or "",
         },
         "distance": 0.0,
     }
@@ -360,17 +340,7 @@ async def semantic_node(state: ShoppingState) -> dict:
         return {"rag_hits": [], "raw_answer": _SEMANTIC_NO_HIT_MSG}
 
     answer = await rag_service.generate_rag_response(question, hits, history=history)
-    # [상품 카드 정확도] 검색 후보(top-4)가 전부 답변 문장에 언급된다는 보장이
-    # 없다(개인화 취향 벡터 혼합 등으로 후보에 들어왔지만 LLM이 실제로는 언급을
-    # 안 한 상품도 있음). 텍스트에 실제로 상품명이 등장하는 후보만 sources/가드
-    # 검증 대상으로 남긴다 — _match_history_products 와 동일한 "실제 언급 확인"
-    # 원칙을 여기도 적용.
-    mentioned_hits = [
-        h for h in hits
-        if h.get("metadata", {}).get("product_name")
-        and h["metadata"]["product_name"] in answer
-    ]
-    return {"rag_hits": mentioned_hits, "raw_answer": answer}
+    return {"rag_hits": hits, "raw_answer": answer}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -571,26 +541,6 @@ _SMALL_TALK_SYSTEM_PROMPT = (
 _SMALL_TALK_FALLBACK = "안녕하세요! 무엇을 도와드릴까요?"
 
 
-# ════════════════════════════════════════════════════════════════════════
-# clarify_node — 인텐트 분류 confidence 낮음 (GPT 미사용, 고정 되묻기)
-# ════════════════════════════════════════════════════════════════════════
-_CLARIFY_MSG = (
-    "질문을 조금 더 구체적으로 말씀해주시겠어요? "
-    "예: '5만원 이하 신발 보여줘', '겨울에 따뜻한 옷 추천해줘', "
-    "'내 주문 배송 상태 알려줘'"
-)
-
-
-async def clarify_node(state: ShoppingState) -> dict:
-    """분류 confidence 가 낮을 때(route_by_intent) 도달하는 고정 되묻기 응답.
-
-    LLM 호출 없이 고정 문구로 즉답한다 — 애매한 입력에 LLM이 이전 대화를
-    과도하게 끌어와 엉뚱하게 답하는 것보다, 사용자에게 명확히 되묻는 편이
-    안전하고 결정적이다.
-    """
-    return {"raw_answer": _CLARIFY_MSG}
-
-
 async def small_talk_node(state: ShoppingState) -> dict:
     """gpt-5.4 가벼운 응답 (LCEL 체인). 멀티턴 history 주입."""
     question = state["question"]
@@ -674,10 +624,21 @@ async def append_message_node(state: ShoppingState) -> dict:
       게스트는 config(thread_id) 없이 invoke 되므로 이 누적분이 영속되지 않고
       해당 요청 처리 후 폐기된다. 즉 게스트에게는 사실상 no-op 에 가깝다.
       (그래도 그래프 흐름 일관성을 위해 모든 경로가 이 노드를 통과한다.)
+
+    [상품 카드 유지] SEMANTIC_SEARCH 검색 근거(sources)를 AIMessage.additional_kwargs
+      에 함께 실어 checkpointer 에 영속시킨다. 그래야 다른 세션으로 갔다가 돌아오거나
+      로그아웃 후 재로그인해도(= 세션 목록에서 이 대화방을 다시 열어도) 썸네일/상세
+      링크가 그대로 남는다. routers/chat.py 의 sources 부착 조건과 동일하게
+      SEMANTIC_SEARCH 인텐트일 때만 계산한다(그 외엔 매 턴 불필요한 import 방지).
     """
+    rag_hits = state.get("rag_hits") or []
+    sources: list[dict] = []
+    if rag_hits and coerce_intent_result(state.get("intent_result")).intent == IntentType.SEMANTIC_SEARCH:
+        from graph.rag_pipeline import hits_to_sources
+        sources = hits_to_sources(rag_hits)
     return {
         "messages": [
             HumanMessage(content=state["question"]),
-            AIMessage(content=state["final_answer"]),
+            AIMessage(content=state["final_answer"], additional_kwargs={"sources": sources}),
         ]
     }

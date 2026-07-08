@@ -9,6 +9,10 @@ class HistoryItem(BaseModel):
     """대화 이력 단건 (role: user | bot)"""
     role: str = Field(..., description="'user' 또는 'bot'")
     text: str = Field(..., max_length=2000)
+    # [상품 카드 유지] bot 메시지에 딸린 검색 근거 상품(썸네일/상세링크용).
+    # GET /chat/sessions/{id}/messages 로 과거 대화를 불러올 때만 채워짐
+    # (클라이언트가 보내는 요청 history 에는 보통 없음 → 기본 None).
+    sources: Optional[List["SourceItem"]] = Field(None, description="검색 근거 상품 목록(있는 경우만)")
 
 
 class ChatRequest(BaseModel):

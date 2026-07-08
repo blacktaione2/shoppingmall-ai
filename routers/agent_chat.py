@@ -127,7 +127,7 @@ async def agent_chat(request: ChatRequest) -> ChatResponse:
     new_message = HumanMessage(content=request.question)
     if is_guest:
         # 게스트: 클라이언트 history 를 메시지로 시드 + 1회성 thread_id (비영속)
-        client_history = [item.model_dump() for item in request.history]
+        client_history = [item.model_dump(exclude_none=True) for item in request.history]
         seed = history_to_messages(client_history)
         init_state = {
             "messages": seed + [new_message],
