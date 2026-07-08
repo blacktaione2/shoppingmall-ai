@@ -30,6 +30,12 @@ class ChatRequest(BaseModel):
         max_length=10,
         description="직전 대화 이력. 오래된 순서대로 전달.",
     )
+    # [다중 세션] 로그인 회원의 대화방(Thread) 식별자. LangGraph thread_id 로 쓰인다.
+    # 생략하면 서버가 새 대화방을 만들어 사용한다(응답의 session_id 로 확인).
+    session_id: Optional[str] = Field(
+        None, max_length=36,
+        description="로그인 회원의 대화방 ID(UUID). 생략 시 서버가 새로 생성.",
+    )
 
     @field_validator("question")
     @classmethod
@@ -75,6 +81,10 @@ class ChatResponse(BaseModel):
         None, description="확인 요청 상세(order_id, prompt 등). interrupt_pending=True 일 때만.")
     resume_thread_id: Optional[str] = Field(
         None, description="재개에 사용할 thread_id. /chat/agent/resume 호출 시 그대로 전달.")
+    # [다중 세션] 이번 응답이 사용된 대화방 ID. 로그인 사용자만 채워짐(게스트는 None).
+    # 클라이언트가 session_id 없이 요청했다면 서버가 새로 만든 값이 여기로 온다.
+    session_id: Optional[str] = Field(
+        None, description="이번 요청이 사용된 대화방 ID(로그인 사용자만, 신규 생성분 포함).")
 
 
 class SourceItem(BaseModel):
@@ -89,6 +99,21 @@ class SourceItem(BaseModel):
     # 프론트 상품 카드 썸네일용 이미지 URL(없으면 빈 문자열)
     image_url: str = Field("", description="상품 이미지 URL")
     score: float = Field(0.0, description="관련도 점수(높을수록 관련)")
+
+
+class ChatSessionItem(BaseModel):
+    """대화방 목록 1건 (GET /chat/sessions, POST /chat/sessions 응답)"""
+    session_id: str
+    title: str
+    updated_at: str
+
+
+class ChatSessionListResponse(BaseModel):
+    sessions: List[ChatSessionItem]
+
+
+class ChatSessionMessagesResponse(BaseModel):
+    messages: List[HistoryItem]
 
 
 class FaqItem(BaseModel):
@@ -132,3 +157,7 @@ class VoiceChatResponse(BaseModel):
     intent: str = Field(..., description="분류된 인텐트")
     confidence: float = Field(0.0, description="인텐트 분류 확신도")
     audio_base64: str = Field(..., description="답변 음성(mp3) base64 인코딩 문자열")
+    session_id: Optional[str] = Field(
+        None, description="이번 요청이 사용된 대화방 ID(로그인 사용자만).")
+    session_id: Optional[str] = Field(
+        None, description="이번 요청이 사용된 대화방 ID(로그인 사용자만).")

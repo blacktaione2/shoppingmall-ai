@@ -1,23 +1,28 @@
 """
 채팅 라우터: POST /chat/ask, POST /chat/stream
+             POST/GET/DELETE /chat/sessions (다중 세션 대화방 관리)
 
 [LangGraph 전환]
 - 기존 파이프라인을 graph.builder 의 컴파일된 StateGraph ainvoke 로 대체.
 
-[멀티턴 하이브리드]
+[멀티턴 하이브리드 + 다중 세션]
 - 게스트: thread_id 없음 → 클라이언트가 history 전송 → config 없이 invoke (A안, 비영속)
-- 로그인: thread_id = chat_token → 체크포인터(MemorySaver 또는 Redis)에서
-    messages 조회 (B안)
+- 로그인: thread_id = session_id(대화방, CHAT_SESSION.SESSION_ID) → 체크포인터
+    (MemorySaver 또는 Redis)에서 messages 조회 (B안)
+    · CHAT_TOKEN 은 회원당 1개뿐인 인증 토큰이라 thread_id 로 쓸 수 없다(여러
+      대화방을 구분할 수 없음) → 회원당 여러 개 가능한 SESSION_ID 를 대신 쓴다.
+    · session_id 미전송 시 서버가 새 대화방을 만들어 쓰고, 응답의 session_id 로
+      클라이언트에게 알려준다.
     · 서버 메모리에 messages 있음        → messages → history 변환분 주입
     · 없음(첫 대화 / uvicorn 재시작 소실) → 클라이언트 폴백 history 로 seed
-  invoke 시 config={"configurable":{"thread_id": chat_token}} 를 넘겨
+  invoke 시 config={"configurable":{"thread_id": session_id}} 를 넘겨
   append_message_node 가 누적한 messages 가 thread 별로 보존된다.
 - chat.py 책임:
   1) 게스트/로그인 판정 (chat_token → member_id)
-  2) (로그인) 체크포인터 조회 + 폴백 seed
+  2) (로그인) 대화방 소유권 검증/생성 + 체크포인터 조회 + 폴백 seed
   3) 그래프 ainvoke (게스트: config 없음 / 로그인: config 있음)
-  4) CHAT_HISTORY Oracle 저장 (로그인만, 기존 유지)
-  5) ChatResponse 변환
+  4) CHAT_HISTORY Oracle 저장 + CHAT_SESSION 활동시각/제목 갱신 (로그인만)
+  5) ChatResponse 변환 (session_id 포함)
 """
 import logging
 import uuid
@@ -26,11 +31,25 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from schemas.chat_schema import ChatRequest, ChatResponse
+from schemas.chat_schema import (
+    ChatRequest,
+    ChatResponse,
+    ChatSessionItem,
+    ChatSessionListResponse,
+    ChatSessionMessagesResponse,
+)
 from schemas.intent_schema import IntentType, coerce_intent_result
-from database.oracle_db import save_chat_history, resolve_chat_token
+from database.oracle_db import (
+    save_chat_history,
+    resolve_chat_token,
+    create_chat_session,
+    list_chat_sessions,
+    get_chat_session_owner,
+    touch_chat_session,
+    delete_chat_session,
+)
 from pipeline.stream_util import event_stream
-from graph.builder import build_graph
+from graph.builder import build_graph, get_checkpointer
 from graph.llm import messages_to_history, trim_history
 from graph.observability import route_metadata
 from graph.metrics import record_metrics, RequestMetrics, LatencyTimer
@@ -46,6 +65,7 @@ _PIPELINE_ERROR_MESSAGE = (
 )
 _INVALID_TOKEN_MESSAGE = "로그인이 만료되었거나 유효하지 않습니다. 다시 로그인해 주세요."
 _DUPLICATE_REQUEST_MESSAGE = "이미 처리 중인 요청입니다. 잠시만 기다려 주세요."
+_SESSION_NOT_FOUND_MESSAGE = "존재하지 않거나 접근 권한이 없는 대화방입니다."
 
 # 컴파일된 그래프를 모듈 로드 시점에 만들지 않는다.
 # 이유: main.py 가 'from routers import chat' 하는 순간(=lifespan 이전)
@@ -70,11 +90,14 @@ def _get_graph():
     return _graph_app
 
 
-async def _resolve_history(chat_token: str, client_history: list[dict]) -> list[dict]:
+async def _resolve_history(thread_id: str, client_history: list[dict]) -> list[dict]:
     """로그인 사용자의 대화 이력을 결정한다.
 
+    [다중 세션] thread_id 는 더 이상 CHAT_TOKEN 이 아니라 대화방 SESSION_ID 다
+    (회원당 CHAT_TOKEN 은 1개뿐이라 여러 대화방을 구분할 수 없기 때문).
+
     우선순위:
-      1) checkpointer(thread_id=chat_token)에 누적된 messages 가 있으면 그것을
+      1) checkpointer(thread_id=session_id)에 누적된 messages 가 있으면 그것을
          history dict 로 변환해 사용 (서버가 기억하는 정식 이력).
       2) 없으면(첫 대화 / uvicorn 재시작으로 메모리 소실) 클라이언트가 보낸
          폴백 history 를 그대로 사용 → 이후 append_message_node 가 다시 누적 시작.
@@ -83,7 +106,7 @@ async def _resolve_history(chat_token: str, client_history: list[dict]) -> list[
     StateSnapshot 을 반환한다(예외 아님). 따라서 .values.get("messages", []) 로
     안전하게 조회 가능하다.
     """
-    config = {"configurable": {"thread_id": chat_token}}
+    config = {"configurable": {"thread_id": thread_id}}
     try:
         snapshot = await _get_graph().aget_state(config)
         server_messages = (snapshot.values or {}).get("messages", []) if snapshot else []
@@ -116,6 +139,7 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
 
     # 1) 그래프 입력 State + invoke 설정 구성
     client_history = [item.model_dump() for item in request.history]
+    session_id = None  # 게스트는 None 유지, 로그인은 아래에서 채워짐
 
     if is_guest:
         # [게스트 - A안] 클라이언트 history 직접 주입.
@@ -137,8 +161,17 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
             **route_metadata("router_pipeline", is_guest=True),
         }
     else:
-        # [로그인 - B안] checkpointer 조회 + 폴백 seed
-        history = await _resolve_history(chat_token, client_history)
+        # [로그인 - B안, 다중 세션] thread_id = 대화방 SESSION_ID (CHAT_TOKEN 아님).
+        # session_id 미전송 시 서버가 새 대화방을 만들어 쓴다(응답의 session_id 로 확인).
+        session_id = request.session_id
+        if session_id:
+            owner_id = await run_in_threadpool(get_chat_session_owner, session_id)
+            if owner_id is None or owner_id != member_id:
+                raise HTTPException(status_code=404, detail=_SESSION_NOT_FOUND_MESSAGE)
+        else:
+            session_id = (await run_in_threadpool(create_chat_session, member_id))["session_id"]
+
+        history = await _resolve_history(session_id, client_history)
         init_state = {
             "question": request.question,
             "member_id": member_id,
@@ -150,7 +183,7 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
             "rag_hits": [],
         }
         invoke_config = {
-            "configurable": {"thread_id": chat_token},
+            "configurable": {"thread_id": session_id},
             **route_metadata("router_pipeline", is_guest=False),
         }
 
@@ -171,6 +204,7 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
             answer=_PIPELINE_ERROR_MESSAGE,
             intent="SMALL_TALK",
             confidence=0.0,
+            session_id=session_id,
         )
 
     # 라우터 그래프 경로 측정 기록.
@@ -206,14 +240,16 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
             )
         except Exception:
             logger.exception("CHAT_HISTORY 저장 실패")
+        try:
+            await run_in_threadpool(touch_chat_session, session_id, request.question)
+        except Exception:
+            logger.exception("CHAT_SESSION 활동시각/제목 갱신 실패")
 
-    # SEMANTIC/STRUCTURED 검색 시에만 출처(sources) 부착 (그 외 인텐트는 None → 하위호환)
+    # SEMANTIC 검색 시에만 출처(sources) 부착 (그 외 인텐트는 None → 하위호환)
     # rag_hits 존재 여부만으로 판단하지 않고 인텐트를 함께 확인한다
     # (init_state 리셋과 함께 스테일 sources 에 대한 2중 방어).
     sources = None
-    if rag_hits and intent_result.intent in (
-        IntentType.SEMANTIC_SEARCH, IntentType.STRUCTURED_QUERY,
-    ):
+    if rag_hits and intent_result.intent == IntentType.SEMANTIC_SEARCH:
         from graph.rag_pipeline import hits_to_sources
         sources = hits_to_sources(rag_hits)
 
@@ -222,6 +258,7 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
         intent=intent_value,
         confidence=confidence,
         sources=sources,
+        session_id=session_id,
     )
 
 
@@ -241,3 +278,57 @@ async def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# [다중 세션] 대화방(Thread) 관리 — 로그인 회원 전용
+#   POST   /chat/sessions                : 새 대화방 생성
+#   GET    /chat/sessions                : 대화방 목록(최근 활동순)
+#   GET    /chat/sessions/{id}/messages  : 대화방 이력 조회
+#   DELETE /chat/sessions/{id}           : 대화방 삭제(Oracle 행 + 체크포인트)
+# ════════════════════════════════════════════════════════════════════════
+async def _resolve_member_or_401(chat_token: str) -> int:
+    member_id = await run_in_threadpool(resolve_chat_token, chat_token)
+    if member_id is None:
+        raise HTTPException(status_code=401, detail=_INVALID_TOKEN_MESSAGE)
+    return member_id
+
+
+async def _check_session_owner_or_404(session_id: str, member_id: int) -> None:
+    owner_id = await run_in_threadpool(get_chat_session_owner, session_id)
+    if owner_id is None or owner_id != member_id:
+        raise HTTPException(status_code=404, detail=_SESSION_NOT_FOUND_MESSAGE)
+
+
+@router.post("/sessions", response_model=ChatSessionItem)
+async def create_session(chat_token: str) -> ChatSessionItem:
+    member_id = await _resolve_member_or_401(chat_token)
+    created = await run_in_threadpool(create_chat_session, member_id)
+    return ChatSessionItem(**created)
+
+
+@router.get("/sessions", response_model=ChatSessionListResponse)
+async def get_sessions(chat_token: str) -> ChatSessionListResponse:
+    member_id = await _resolve_member_or_401(chat_token)
+    sessions = await run_in_threadpool(list_chat_sessions, member_id)
+    return ChatSessionListResponse(sessions=[ChatSessionItem(**s) for s in sessions])
+
+
+@router.get("/sessions/{session_id}/messages", response_model=ChatSessionMessagesResponse)
+async def get_session_messages(session_id: str, chat_token: str) -> ChatSessionMessagesResponse:
+    member_id = await _resolve_member_or_401(chat_token)
+    await _check_session_owner_or_404(session_id, member_id)
+    history = await _resolve_history(session_id, [])
+    return ChatSessionMessagesResponse(messages=history)
+
+
+@router.delete("/sessions/{session_id}")
+async def remove_session(session_id: str, chat_token: str) -> dict:
+    member_id = await _resolve_member_or_401(chat_token)
+    await _check_session_owner_or_404(session_id, member_id)
+    await run_in_threadpool(delete_chat_session, session_id)
+    try:
+        await get_checkpointer().adelete_thread(session_id)
+    except Exception:
+        logger.exception("체크포인터 thread 삭제 실패(무시): session_id=%s", session_id)
+    return {"deleted": True}

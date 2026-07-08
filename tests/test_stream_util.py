@@ -123,9 +123,9 @@ class TestEventStream:
         # 청크 재조립 = 원문
         text = "".join(p[1]["text"] for p in parsed if p[0] == "chunk")
         assert text == "안녕하세요"
-        # done 메타데이터
+        # done 메타데이터 (session_id 는 FakeResult 에 속성이 없어 None 폴백)
         done = parsed[-1][1]
-        assert done == {"intent": "SMALL_TALK", "confidence": 0.91, "sources": None}
+        assert done == {"intent": "SMALL_TALK", "confidence": 0.91, "session_id": None}
 
     def test_error_event_on_pipeline_failure(self):
         events = _collect(event_stream(_fake_pipeline_fail, None, delay=0))

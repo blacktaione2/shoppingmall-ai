@@ -116,11 +116,13 @@ async def voice_chat(
     file: UploadFile = File(...),
     chat_token: str | None = Form(None),
     history: str | None = Form(None),
+    session_id: str | None = Form(None),
 ) -> VoiceChatResponse:
     """오디오 → STT → 기존 파이프라인 → TTS → JSON(텍스트+음성 base64).
 
-    chat_token / history 는 Form 필드(파일과 동시 전송).
+    chat_token / history / session_id 는 Form 필드(파일과 동시 전송).
     history 는 JSON 문자열(예: '[{"role":"user","text":"..."}]').
+    session_id 는 로그인 회원이 현재 열어둔 대화방 ID(다중 세션과 동일하게 이어짐).
     """
     file_bytes = await file.read()
     try:
@@ -153,6 +155,7 @@ async def voice_chat(
         chat_token=chat_token or None,
         question=question,
         history=_parse_history_form(history),
+        session_id=session_id,
     )
     chat_response = await process_chat_pipeline(chat_request)
 
@@ -171,4 +174,5 @@ async def voice_chat(
         intent=chat_response.intent,
         confidence=chat_response.confidence,
         audio_base64=audio_base64,
+        session_id=chat_response.session_id,
     )

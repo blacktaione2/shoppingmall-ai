@@ -52,6 +52,13 @@ def test_logged_in_user_flow(monkeypatch):
     def fake_save(member_id, q, a, intent):
         saved.update(member_id=member_id, q=q, a=a, intent=intent)
     monkeypatch.setattr(chat, "save_chat_history", fake_save, raising=True)
+    # [다중 세션] session_id 미전송 → 서버가 새 대화방을 만든다(Oracle 격리)
+    monkeypatch.setattr(
+        chat, "create_chat_session",
+        lambda member_id: {"session_id": "sess-1", "title": "새 대화", "updated_at": "2024-01-01T00:00:00"},
+        raising=True,
+    )
+    monkeypatch.setattr(chat, "touch_chat_session", lambda *a, **k: None, raising=True)
 
     req = ChatRequest(chat_token="tok-123", question="안녕", history=[])
     resp = asyncio.run(chat.process_chat_pipeline(req))
@@ -61,6 +68,8 @@ def test_logged_in_user_flow(monkeypatch):
     # 이력 저장이 호출됐는지
     assert saved["member_id"] == 42
     assert saved["intent"] == "SMALL_TALK"
+    # 새 대화방이 생성되어 응답에 실려왔는지
+    assert resp.session_id == "sess-1"
 
 
 def test_guest_flow_no_history_save(monkeypatch):
@@ -108,6 +117,12 @@ def test_history_passed_to_graph(monkeypatch):
     importlib.reload(chat)
     monkeypatch.setattr(chat, "resolve_chat_token", lambda t: 1, raising=True)
     monkeypatch.setattr(chat, "save_chat_history", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(
+        chat, "create_chat_session",
+        lambda member_id: {"session_id": "sess-1", "title": "새 대화", "updated_at": "2024-01-01T00:00:00"},
+        raising=True,
+    )
+    monkeypatch.setattr(chat, "touch_chat_session", lambda *a, **k: None, raising=True)
 
     req = ChatRequest(
         chat_token="tok",

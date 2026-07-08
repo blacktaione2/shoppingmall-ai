@@ -7,12 +7,19 @@ tests/test_multiturn_memory.py
 - 핵심은 "노드가 받은 state['history'] 가 무엇인가"를 캡처해서,
   서버 메모리(checkpointer) 누적분이 다음 턴에 제대로 주입되는지 확인하는 것.
 
+[다중 세션 전환]
+- LangGraph thread_id 는 이제 chat_token 이 아니라 session_id 다(회원당
+  chat_token 은 1개뿐이라 여러 대화방을 구분할 수 없기 때문).
+  CHAT_SESSION 관련 Oracle 함수(create_chat_session/get_chat_session_owner/
+  touch_chat_session)를 인메모리 딕셔너리로 monkeypatch 해 대체한다.
+
 [검증 시나리오]
-1. 로그인 2턴: 2턴째 노드의 history 에 1턴 질문/답변이 들어있다 (서버 메모리 누적).
+1. 로그인 2턴: 2턴째 노드의 history 에 1턴 질문/답변이 들어있다 (서버 메모리 누적,
+   1턴 응답의 session_id 를 2턴 요청에 그대로 실어보낸다).
 2. 게스트 2턴: config 없이 invoke 되어 서버 메모리에 누적되지 않는다
    (2턴째 history 는 클라이언트가 보낸 것만).
 3. 재시작 폴백: 서버 메모리를 비운 상태에서 클라이언트 폴백 history 가 주입된다.
-4. thread 격리: 서로 다른 chat_token 의 대화가 섞이지 않는다.
+4. thread 격리: 서로 다른 session_id 의 대화가 섞이지 않는다.
 """
 import asyncio
 import importlib
@@ -63,6 +70,23 @@ def _setup(monkeypatch, answer_text="응답입니다"):
     # Oracle 의존 격리
     monkeypatch.setattr(chat, "resolve_chat_token", lambda t: 7, raising=True)
     monkeypatch.setattr(chat, "save_chat_history", lambda *a, **k: None, raising=True)
+
+    # [다중 세션] CHAT_SESSION 을 인메모리 딕셔너리로 대체 (session_id -> member_id)
+    sessions: dict[str, int] = {}
+    counter = {"n": 0}
+
+    def fake_create_chat_session(member_id):
+        counter["n"] += 1
+        sid = f"sess-{counter['n']}"
+        sessions[sid] = member_id
+        return {"session_id": sid, "title": "새 대화", "updated_at": "2024-01-01T00:00:00"}
+
+    def fake_get_chat_session_owner(session_id):
+        return sessions.get(session_id)
+
+    monkeypatch.setattr(chat, "create_chat_session", fake_create_chat_session, raising=True)
+    monkeypatch.setattr(chat, "get_chat_session_owner", fake_get_chat_session_owner, raising=True)
+    monkeypatch.setattr(chat, "touch_chat_session", lambda *a, **k: None, raising=True)
     return chat
 
 
@@ -72,14 +96,18 @@ def _setup(monkeypatch, answer_text="응답입니다"):
 def test_logged_in_multiturn_accumulates(monkeypatch):
     chat = _setup(monkeypatch, answer_text="네 셔츠 추천드려요")
 
-    # 1턴
+    # 1턴 (session_id 미전송 → 서버가 새 대화방 생성)
     req1 = ChatRequest(chat_token="tok-A", question="셔츠 추천해줘", history=[])
-    asyncio.run(chat.process_chat_pipeline(req1))
+    resp1 = asyncio.run(chat.process_chat_pipeline(req1))
     # 1턴 노드는 history 가 비어있어야 함 (첫 대화)
     assert _captured["history"] == []
+    assert resp1.session_id is not None
 
-    # 2턴 (클라이언트는 history 를 안 보냄 → 서버 메모리에 의존)
-    req2 = ChatRequest(chat_token="tok-A", question="그럼 그 색은?", history=[])
+    # 2턴 (같은 session_id 를 실어보내 같은 대화방으로 이어감)
+    req2 = ChatRequest(
+        chat_token="tok-A", question="그럼 그 색은?", history=[],
+        session_id=resp1.session_id,
+    )
     asyncio.run(chat.process_chat_pipeline(req2))
 
     # 2턴 노드의 history 에 1턴 질문/답변이 서버 메모리에서 복원되어야 함
@@ -123,7 +151,8 @@ def test_restart_fallback_to_client_history(monkeypatch):
 
     # 1턴 (서버 메모리에 누적됨)
     req1 = ChatRequest(chat_token="tok-B", question="첫 질문", history=[])
-    asyncio.run(chat.process_chat_pipeline(req1))
+    resp1 = asyncio.run(chat.process_chat_pipeline(req1))
+    session_id = resp1.session_id
 
     # === uvicorn 재시작 시뮬레이션: checkpointer 를 새것으로 교체 + 그래프 재컴파일 ===
     from langgraph.checkpoint.memory import MemorySaver
@@ -132,6 +161,10 @@ def test_restart_fallback_to_client_history(monkeypatch):
     importlib.reload(chat)
     monkeypatch.setattr(chat, "resolve_chat_token", lambda t: 7, raising=True)
     monkeypatch.setattr(chat, "save_chat_history", lambda *a, **k: None, raising=True)
+    # CHAT_SESSION 자체(Oracle 행)는 재시작해도 남아있으므로, 소유권 검증만
+    # 통과하면 된다(이 session_id 는 이 회원 소유라고 가정).
+    monkeypatch.setattr(chat, "get_chat_session_owner", lambda sid: 7, raising=True)
+    monkeypatch.setattr(chat, "touch_chat_session", lambda *a, **k: None, raising=True)
 
     # 재시작 후, 같은 thread 로 2턴 — 서버 메모리엔 없지만 클라이언트가 폴백 history 보냄
     req2 = ChatRequest(
@@ -139,6 +172,7 @@ def test_restart_fallback_to_client_history(monkeypatch):
         question="이어서 질문",
         history=[HistoryItem(role="user", text="첫 질문"),
                  HistoryItem(role="bot", text="첫 답변")],
+        session_id=session_id,
     )
     asyncio.run(chat.process_chat_pipeline(req2))
 
@@ -150,22 +184,23 @@ def test_restart_fallback_to_client_history(monkeypatch):
 
 
 # ────────────────────────────────────────────────────────────────────────
-# 4) thread 격리 — 다른 chat_token 의 대화가 섞이지 않음
+# 4) thread 격리 — 서로 다른 session_id 의 대화가 섞이지 않음
 # ────────────────────────────────────────────────────────────────────────
 def test_thread_isolation(monkeypatch):
     chat = _setup(monkeypatch, answer_text="답변X")
 
-    # thread A 1턴
-    asyncio.run(chat.process_chat_pipeline(
+    # 대화방 A 1턴 (session_id 미전송 → 새 대화방 A 생성)
+    resp_a1 = asyncio.run(chat.process_chat_pipeline(
         ChatRequest(chat_token="tok-A", question="A의 질문", history=[])
     ))
-    # thread B 1턴
+    session_a = resp_a1.session_id
+    # 대화방 B 1턴 (session_id 미전송 → 새 대화방 B 생성, A 와 다른 thread)
     asyncio.run(chat.process_chat_pipeline(
         ChatRequest(chat_token="tok-B", question="B의 질문", history=[])
     ))
-    # thread A 2턴 — A 의 이력만 보여야 함 (B 섞임 없음)
+    # 대화방 A 2턴 — A 의 이력만 보여야 함 (B 섞임 없음)
     asyncio.run(chat.process_chat_pipeline(
-        ChatRequest(chat_token="tok-A", question="A의 두번째", history=[])
+        ChatRequest(chat_token="tok-A", question="A의 두번째", history=[], session_id=session_a)
     ))
     assert _captured["history"] == [
         {"role": "user", "text": "A의 질문"},
@@ -174,3 +209,4 @@ def test_thread_isolation(monkeypatch):
     # B 의 질문이 섞이지 않았는지
     texts = [h["text"] for h in _captured["history"]]
     assert "B의 질문" not in texts
+

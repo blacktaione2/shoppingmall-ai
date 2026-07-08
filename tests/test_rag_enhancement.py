@@ -221,6 +221,12 @@ def test_chat_response_includes_sources(monkeypatch):
     importlib.reload(chat)
     monkeypatch.setattr(chat, "resolve_chat_token", lambda t: 1, raising=True)
     monkeypatch.setattr(chat, "save_chat_history", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(
+        chat, "create_chat_session",
+        lambda member_id: {"session_id": "sess-1", "title": "새 대화", "updated_at": "2024-01-01T00:00:00"},
+        raising=True,
+    )
+    monkeypatch.setattr(chat, "touch_chat_session", lambda *a, **k: None, raising=True)
 
     from schemas.chat_schema import ChatRequest
     resp = asyncio.run(chat.process_chat_pipeline(

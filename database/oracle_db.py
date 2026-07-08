@@ -3,6 +3,7 @@ database/oracle_db.py
 Oracle Autonomous DB 연결 모듈 (Wallet 기반 TLS)
 """
 import os
+import uuid
 import oracledb
 from dotenv import load_dotenv
 
@@ -145,8 +146,7 @@ def fetch_all_products() -> list[dict]:
                PRICE,
                DESCRIPTION,
                STOCK,
-               IMAGE_URL,
-               STATUS
+               IMAGE_URL
           FROM PRODUCT
          ORDER BY PRODUCT_ID
     """
@@ -172,8 +172,7 @@ def fetch_product_by_id(product_id) -> dict | None:
                PRICE,
                DESCRIPTION,
                STOCK,
-               IMAGE_URL,
-               STATUS
+               IMAGE_URL
           FROM PRODUCT
          WHERE PRODUCT_ID = :product_id
     """
@@ -252,9 +251,7 @@ def build_structured_query(
     sort_by=None,
     limit: int = 5,
 ) -> tuple[str, dict]:
-    # [판매중단 제외] STATUS='ACTIVE'가 아닌 상품(DISCONTINUED 등)은 챗봇 조건검색
-    # 결과에서 항상 제외한다 — 관리자가 "판매중단" 처리한 상품이 계속 추천되는 것 방지.
-    where_clauses: list[str] = ["STATUS = 'ACTIVE'"]
+    where_clauses: list[str] = []
     binds: dict = {}
 
     if category:
@@ -290,7 +287,7 @@ def build_structured_query(
     order_by = _resolve_order_by(sort_by)
 
     sql = (
-        "SELECT PRODUCT_ID, PRODUCT_NAME, CATEGORY, PRICE, DESCRIPTION, STOCK, IMAGE_URL "
+        "SELECT PRODUCT_ID, PRODUCT_NAME, CATEGORY, PRICE, DESCRIPTION, STOCK "
         "FROM PRODUCT"
     )
     if where_clauses:
@@ -446,11 +443,12 @@ _ORDERS_BASE_SQL = """
            o.ORDER_DATE,
            o.ORDER_STATUS,
            o.TOTAL_PRICE,
-           oi.PRODUCT_NAME,
+           p.PRODUCT_NAME,
            oi.QUANTITY,
            oi.PRICE
       FROM ORDERS o
       LEFT JOIN ORDER_ITEM oi ON o.ORDER_ID = oi.ORDER_ID
+      LEFT JOIN PRODUCT p     ON oi.PRODUCT_ID = p.PRODUCT_ID
      WHERE o.MEMBER_ID = :member_id
 """
 
@@ -576,4 +574,86 @@ def save_chat_history(member_id: int, question: str, answer: str, chat_type: str
                     "chat_type": chat_type,
                 },
             )
+        conn.commit()
+
+
+# ── CHAT_SESSION (다중 세션 대화방) ──────────────────────────────────────────
+_TITLE_MAX_CHARS = 40
+_DEFAULT_TITLE = "새 대화"
+
+
+def create_chat_session(member_id: int) -> dict:
+    """새 대화방을 만들고 {session_id, title, updated_at} 를 반환한다."""
+    session_id = str(uuid.uuid4())
+    insert_sql = """
+        INSERT INTO CHAT_SESSION (SESSION_ID, MEMBER_ID)
+        VALUES (:session_id, :member_id)
+    """
+    select_sql = "SELECT TITLE, UPDATED_AT FROM CHAT_SESSION WHERE SESSION_ID = :session_id"
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(insert_sql, {"session_id": session_id, "member_id": member_id})
+            cursor.execute(select_sql, {"session_id": session_id})
+            title, updated_at = cursor.fetchone()
+        conn.commit()
+    return {"session_id": session_id, "title": title, "updated_at": updated_at.isoformat()}
+
+
+def list_chat_sessions(member_id: int) -> list[dict]:
+    """회원의 대화방 목록을 최근 활동순으로 반환한다."""
+    sql = """
+        SELECT SESSION_ID, TITLE, UPDATED_AT
+          FROM CHAT_SESSION
+         WHERE MEMBER_ID = :member_id
+         ORDER BY UPDATED_AT DESC
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, {"member_id": member_id})
+            rows = cursor.fetchall()
+    return [
+        {"session_id": row[0], "title": row[1], "updated_at": row[2].isoformat()}
+        for row in rows
+    ]
+
+
+def get_chat_session_owner(session_id: str) -> int | None:
+    """SESSION_ID 의 소유 회원(MEMBER_ID)을 반환한다(없으면 None)."""
+    sql = "SELECT MEMBER_ID FROM CHAT_SESSION WHERE SESSION_ID = :session_id"
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, {"session_id": session_id})
+            row = cursor.fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def touch_chat_session(session_id: str, question: str) -> None:
+    """대화방의 UPDATED_AT 을 갱신한다.
+
+    TITLE 이 아직 기본값('새 대화')이면(=이 대화방의 첫 메시지) question 을
+    최대 40자로 잘라 TITLE 로 저장한다. 이후 메시지는 UPDATED_AT 만 갱신한다.
+    """
+    title = question[:_TITLE_MAX_CHARS]
+    sql = """
+        UPDATE CHAT_SESSION
+           SET UPDATED_AT = SYSTIMESTAMP,
+               TITLE = CASE WHEN TITLE = :default_title THEN :title ELSE TITLE END
+         WHERE SESSION_ID = :session_id
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, {
+                "default_title": _DEFAULT_TITLE,
+                "title": title,
+                "session_id": session_id,
+            })
+        conn.commit()
+
+
+def delete_chat_session(session_id: str) -> None:
+    """대화방 레코드를 삭제한다(체크포인터 삭제는 호출부 책임)."""
+    sql = "DELETE FROM CHAT_SESSION WHERE SESSION_ID = :session_id"
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, {"session_id": session_id})
         conn.commit()
