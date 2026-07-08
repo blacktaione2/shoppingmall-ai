@@ -119,7 +119,7 @@ def test_history_passed_to_graph(monkeypatch):
     monkeypatch.setattr(chat, "save_chat_history", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(
         chat, "create_chat_session",
-        lambda member_id: {"session_id": "sess-1", "title": "새 대화", "updated_at": "2024-01-01T00:00:00"},
+        lambda member_id: {"session_id": "sess-history-test", "title": "새 대화", "updated_at": "2024-01-01T00:00:00"},
         raising=True,
     )
     monkeypatch.setattr(chat, "touch_chat_session", lambda *a, **k: None, raising=True)

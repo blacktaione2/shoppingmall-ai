@@ -154,6 +154,6 @@ def test_voice_history_form(client, monkeypatch):
     assert resp.status_code == 200
     assert captured["chat_token"] == "tok-123"
     assert captured["history"] == [
-        {"role": "user", "text": "이전 질문"},
-        {"role": "bot", "text": "이전 답변"},
+        {"role": "user", "text": "이전 질문", "sources": None},
+        {"role": "bot", "text": "이전 답변", "sources": None},
     ]

@@ -146,7 +146,8 @@ def fetch_all_products() -> list[dict]:
                PRICE,
                DESCRIPTION,
                STOCK,
-               IMAGE_URL
+               IMAGE_URL,
+               STATUS
           FROM PRODUCT
          ORDER BY PRODUCT_ID
     """
@@ -172,7 +173,8 @@ def fetch_product_by_id(product_id) -> dict | None:
                PRICE,
                DESCRIPTION,
                STOCK,
-               IMAGE_URL
+               IMAGE_URL,
+               STATUS
           FROM PRODUCT
          WHERE PRODUCT_ID = :product_id
     """
@@ -251,7 +253,9 @@ def build_structured_query(
     sort_by=None,
     limit: int = 5,
 ) -> tuple[str, dict]:
-    where_clauses: list[str] = []
+    # [판매중단 제외] STATUS='ACTIVE'가 아닌 상품(DISCONTINUED 등)은 챗봇 조건검색
+    # 결과에서 항상 제외한다 — 관리자가 "판매중단" 처리한 상품이 계속 추천되는 것 방지.
+    where_clauses: list[str] = ["STATUS = 'ACTIVE'"]
     binds: dict = {}
 
     if category:
@@ -443,12 +447,11 @@ _ORDERS_BASE_SQL = """
            o.ORDER_DATE,
            o.ORDER_STATUS,
            o.TOTAL_PRICE,
-           p.PRODUCT_NAME,
+           oi.PRODUCT_NAME,
            oi.QUANTITY,
            oi.PRICE
       FROM ORDERS o
       LEFT JOIN ORDER_ITEM oi ON o.ORDER_ID = oi.ORDER_ID
-      LEFT JOIN PRODUCT p     ON oi.PRODUCT_ID = p.PRODUCT_ID
      WHERE o.MEMBER_ID = :member_id
 """
 

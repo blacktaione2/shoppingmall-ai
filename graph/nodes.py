@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 # ════════════════════════════════════════════════════════════════════════
 # 1) classify_node — 인텐트 분류 (gpt-5.4-mini + Structured Output)
 # ════════════════════════════════════════════════════════════════════════
+# [되묻기] 공백/문장부호만 있는 질문(".", "...", "?" 등)은 LLM에 판단을 맡기면
+# 이전 대화 맥락을 과도하게 끌어와 직전 질문을 그대로 반복하는 문제가 있었다
+# (예: "5만원 이하 상의 보여줘" 다음 "."을 보내면 같은 STRUCTURED_QUERY가 반복됨).
+# LLM 호출 없이 결정적으로 차단한다.
+_TRIVIAL_QUESTION_RE = re.compile(r"^[\s.,!?~・…]*$")
+
+
 async def classify_node(state: ShoppingState) -> dict:
     """사용자 질문을 6개 인텐트 중 하나로 분류한다.
 
@@ -59,6 +66,12 @@ async def classify_node(state: ShoppingState) -> dict:
     """
     question = state["question"]
     history = state.get("history", [])
+
+    if _TRIVIAL_QUESTION_RE.match(question):
+        return {"intent_result": IntentResult(
+            intent=IntentType.SMALL_TALK, confidence=0.0,
+        ).model_dump(mode="json")}
+
     try:
         llm = get_intent_llm(temperature=0.0)
         structured_llm = llm.with_structured_output(IntentResult)
@@ -247,9 +260,15 @@ async def _resolve_product_attribute_query(question: str, history: list[dict]):
         ("system",
          f"다음은 실제 판매 중인 상품 목록이다:\n{catalog_names}\n\n"
          "대화 맥락과 현재 질문을 보고, 사용자가 이 목록 중 특정 상품 하나의 "
-         "가격 또는 재고를 묻고 있는지 판단해라. product_name은 반드시 위 "
-         "목록의 이름과 정확히 일치해야 한다. 확실하지 않으면 "
-         "is_asking_about_specific_product를 false로 반환해라."),
+         "가격 또는 재고를 콕 집어 묻고 있는지 판단해라. product_name은 반드시 위 "
+         "목록의 이름과 정확히 일치해야 한다.\n\n"
+         "[중요] '그거 괜찮아?', '그거 어때?', '마음에 들어?', '추천해?', "
+         "'입기 좋아?' 처럼 주관적 의견·평가·추천을 구하는 질문은 가격/재고 "
+         "질문이 아니다 — 이런 경우 반드시 is_asking_about_specific_product를 "
+         "false로 반환해라. '얼마야', '가격이 어떻게 돼', '재고 있어', "
+         "'몇 개 남았어' 처럼 가격 또는 재고를 명시적으로 묻는 질문일 때만 "
+         "true로 판단해라. 확실하지 않으면 is_asking_about_specific_product를 "
+         "false로 반환해라."),
         MessagesPlaceholder("history"),
         ("human", "{question}"),
     ])
@@ -539,6 +558,26 @@ _SMALL_TALK_SYSTEM_PROMPT = (
     "답변은 1~2문장으로 짧게 작성하세요."
 )
 _SMALL_TALK_FALLBACK = "안녕하세요! 무엇을 도와드릴까요?"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# clarify_node — 인텐트 분류 confidence 낮음 (GPT 미사용, 고정 되묻기)
+# ════════════════════════════════════════════════════════════════════════
+_CLARIFY_MSG = (
+    "질문을 조금 더 구체적으로 말씀해주시겠어요? "
+    "예: '5만원 이하 신발 보여줘', '겨울에 따뜻한 옷 추천해줘', "
+    "'내 주문 배송 상태 알려줘'"
+)
+
+
+async def clarify_node(state: ShoppingState) -> dict:
+    """분류 confidence 가 낮을 때(route_by_intent) 도달하는 고정 되묻기 응답.
+
+    LLM 호출 없이 고정 문구로 즉답한다 — 애매한 입력에 LLM이 이전 대화를
+    과도하게 끌어와 엉뚱하게 답하는 것보다, 사용자에게 명확히 되묻는 편이
+    안전하고 결정적이다.
+    """
+    return {"raw_answer": _CLARIFY_MSG}
 
 
 async def small_talk_node(state: ShoppingState) -> dict:
