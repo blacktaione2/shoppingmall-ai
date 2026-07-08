@@ -388,3 +388,16 @@ document.getElementById('key').addEventListener('keydown', e=>{ if(e.key==='Ente
 </body>
 </html>
 """
+
+
+# [임시 디버그 — Slack MCP 도구 미검출 원인 조사용]
+# 확인 끝나면 제거할 것. force_reload=True로 캐시를 무시하고 실제 로드를 강제 실행해
+# 어떤 도구가 잡히는지, 몇 개 서버가 잡히는지 그대로 노출한다.
+@router.get("/debug/mcp-tools", dependencies=[Depends(verify_admin_key)])
+async def debug_mcp_tools():
+    from graph.mcp_tools import get_mcp_tools, is_mcp_enabled, _load_config
+    return {
+        "mcp_enabled": is_mcp_enabled(),
+        "configured_servers": list(_load_config().keys()),
+        "tool_names": [getattr(t, "name", "?") for t in await get_mcp_tools(force_reload=True)],
+    }
