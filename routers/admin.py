@@ -395,9 +395,20 @@ document.getElementById('key').addEventListener('keydown', e=>{ if(e.key==='Ente
 # 어떤 도구가 잡히는지, 몇 개 서버가 잡히는지 그대로 노출한다.
 @router.get("/debug/mcp-tools", dependencies=[Depends(verify_admin_key)])
 async def debug_mcp_tools():
-    from graph.mcp_tools import get_mcp_tools, is_mcp_enabled, _load_config
-    return {
+    from graph.mcp_tools import is_mcp_enabled, _load_config
+    connections = _load_config()
+    result = {
         "mcp_enabled": is_mcp_enabled(),
-        "configured_servers": list(_load_config().keys()),
-        "tool_names": [getattr(t, "name", "?") for t in await get_mcp_tools(force_reload=True)],
+        "configured_servers": list(connections.keys()),
     }
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        client = MultiServerMCPClient(connections=connections)
+        tools = await client.get_tools()
+        result["tool_names"] = [getattr(t, "name", "?") for t in tools]
+    except Exception as e:
+        # [임시 디버그] get_mcp_tools()는 이 예외를 삼키고 빈 리스트로 폴백하는데,
+        # 여기서는 원인 파악을 위해 그대로 노출한다.
+        result["error_type"] = type(e).__name__
+        result["error_message"] = str(e)
+    return result
