@@ -18,6 +18,11 @@ services/notification_service.py
 ADMIN_ALERT_EMAIL : 알림을 받을 관리자 이메일. 비어있으면 발송 생략.
 MAIL_USERNAME/MAIL_PASSWORD : Gmail SMTP 계정(Spring Boot와 동일 계정 재사용 가능,
                               앱 비밀번호 필요).
+SLACK_MCP_REFUND_CHANNEL_ID : Gmail과 별도로 알림을 보낼 Slack 채널 ID. 비어있거나
+                              MCP 도구(conversations_add_message)가 없으면 발송 생략.
+                              (graph/mcp_tools.get_mcp_tools 로 로드된 MCP 도구를
+                              에이전트가 아니라 여기서 이름으로 찾아 직접 호출한다 —
+                              이메일과 동일하게 '승인 후 고정 알림'이라 자율 선택 불필요.)
 """
 import asyncio
 import logging
@@ -67,4 +72,95 @@ async def send_refund_admin_email(order_id: str, member_id: int, reason: str | N
     except Exception:
         logger.exception(
             "환불 알림 메일 발송 실패(무시): order_id=%s member_id=%s", order_id, member_id
+        )
+
+
+# [Slack MCP] 환불 신청 접수를 관리자 Slack 채널에도 알린다.
+# - Gmail 알림과 동일한 지점(승인 후)에서 호출되는 두 번째 알림 채널일 뿐,
+#   에이전트가 자율 선택하는 도구가 아니다(고정 채널/고정 메시지, 결정론적 호출).
+# - korotovsky/slack-mcp-server 의 메시지 전송 도구명은 conversations_add_message,
+#   인자는 channel_id/payload(본문)/thread_ts(선택)이다. 서버 실행 시
+#   SLACK_MCP_ADD_MESSAGE_TOOL 에 대상 채널ID 가 포함되어 있어야 실제 전송된다.
+_SLACK_POST_TOOL_NAME = "conversations_add_message"
+_SLACK_CALL_TIMEOUT_SEC = 10
+
+
+async def send_refund_admin_slack(order_id: str, member_id: int, reason: str | None) -> None:
+    """환불 신청 접수를 관리자 Slack 채널에 알린다(best-effort, 실패해도 예외 안 던짐).
+
+    MCP_ENABLED=false 이거나 SLACK_REFUND_CHANNEL_ID 미설정이면 발송을 생략한다
+    (Gmail 쪽의 ADMIN_ALERT_EMAIL 미설정 시 생략과 동일한 정책).
+    """
+    channel_id = os.getenv("SLACK_REFUND_CHANNEL_ID", "").strip()
+    if not channel_id:
+        logger.info("Slack 환불 알림 생략 — SLACK_REFUND_CHANNEL_ID 미설정")
+        return
+
+    from graph.mcp_tools import get_mcp_tools, is_mcp_enabled
+    if not is_mcp_enabled():
+        logger.info("Slack 환불 알림 생략 — MCP_ENABLED=false")
+        return
+
+    tools = await get_mcp_tools()
+    post_tool = next((t for t in tools if getattr(t, "name", "") == _SLACK_POST_TOOL_NAME), None)
+    if post_tool is None:
+        # 서버 연결은 됐지만 메시지 전송 도구가 없는 경우(설정 문제) — 런타임 실패와
+        # 구분해 WARNING 으로 남겨 "조용히 안 감" 상태를 디버깅할 수 있게 한다.
+        logger.warning(
+            "Slack 환불 알림 생략 — MCP 도구 목록에 '%s' 없음(서버 미등록 또는 "
+            "SLACK_MCP_ADD_MESSAGE_TOOL 미설정 가능성)", _SLACK_POST_TOOL_NAME,
+        )
+        return
+
+    text = (
+        f":rotating_light: AI 챗봇 환불 신청 접수\n"
+        f"주문번호: {order_id}\n회원 ID: {member_id}\n사유: {reason or '(미입력)'}"
+    )
+    try:
+        await asyncio.wait_for(
+            post_tool.ainvoke({"channel_id": channel_id, "payload": text}),
+            timeout=_SLACK_CALL_TIMEOUT_SEC,
+        )
+    except Exception:
+        logger.exception(
+            "Slack 환불 알림 전송 실패(무시): order_id=%s member_id=%s", order_id, member_id
+        )
+
+
+async def send_refund_admin_slack(order_id: str, member_id: int, reason: str | None) -> None:
+    """환불 신청 접수를 관리자 Slack 채널에 알린다(best-effort, 실패해도 예외 안 던짐).
+
+    MCP 로 연동된 Slack 서버(conversations_add_message 도구)를 이름으로 찾아 직접
+    호출한다 — 에이전트가 자율 선택하는 도구가 아니라, 이메일처럼 승인 시점에
+    고정 호출되는 알림이다.
+    """
+    channel_id = os.getenv("SLACK_MCP_REFUND_CHANNEL_ID", "").strip()
+    if not channel_id:
+        logger.info("환불 알림 Slack 생략 — SLACK_MCP_REFUND_CHANNEL_ID 미설정")
+        return
+
+    try:
+        from graph.mcp_tools import get_mcp_tools
+
+        tools = await get_mcp_tools()
+        slack_tool = next(
+            (t for t in tools if getattr(t, "name", "") == "conversations_add_message"), None
+        )
+        if slack_tool is None:
+            logger.info("환불 알림 Slack 생략 — conversations_add_message MCP 도구 없음")
+            return
+
+        text = (
+            f"[쇼핑몰] 챗봇 환불 신청 접수 - 주문 {order_id}\n"
+            f"회원 ID: {member_id}\n"
+            f"사유: {reason or '(미입력)'}"
+        )
+        await slack_tool.ainvoke({
+            "channel_id": channel_id,
+            "payload": text,
+            "content_type": "text/plain",
+        })
+    except Exception:
+        logger.exception(
+            "환불 알림 Slack 발송 실패(무시): order_id=%s member_id=%s", order_id, member_id
         )

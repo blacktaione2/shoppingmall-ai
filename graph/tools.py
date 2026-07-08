@@ -261,8 +261,13 @@ async def request_refund(
     #        DB 쓰기를 하지 않으므로 스키마/Spring Boot 에 영향이 없다.
     logger.info("환불 신청 접수: member_id=%s order_id=%s reason=%r",
                 member_id, oid, reason)
-    # 관리자 알림(best-effort) — 실패해도 사용자 응답(접수 완료 안내)은 그대로 진행.
-    await notification_service.send_refund_admin_email(oid, member_id, reason)
+    # 관리자 알림(best-effort, 2채널) — 실패해도 사용자 응답(접수 완료 안내)은 그대로 진행.
+    # 이메일/Slack 을 동시에 발송해 응답 지연이 두 채널만큼 누적되지 않게 한다.
+    await asyncio.gather(
+        notification_service.send_refund_admin_email(oid, member_id, reason),
+        notification_service.send_refund_admin_slack(oid, member_id, reason),
+        return_exceptions=True,
+    )
     suffix = f" (사유: {reason})" if reason else ""
     return (
         f"주문 {oid}에 대한 환불 신청이 접수되었습니다{suffix}. "
