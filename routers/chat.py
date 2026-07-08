@@ -247,11 +247,13 @@ async def process_chat_pipeline(request: ChatRequest) -> ChatResponse:
         except Exception:
             logger.exception("CHAT_SESSION 활동시각/제목 갱신 실패")
 
-    # SEMANTIC 검색 시에만 출처(sources) 부착 (그 외 인텐트는 None → 하위호환)
+    # SEMANTIC/STRUCTURED 검색 시에만 출처(sources) 부착 (그 외 인텐트는 None → 하위호환)
     # rag_hits 존재 여부만으로 판단하지 않고 인텐트를 함께 확인한다
     # (init_state 리셋과 함께 스테일 sources 에 대한 2중 방어).
     sources = None
-    if rag_hits and intent_result.intent == IntentType.SEMANTIC_SEARCH:
+    if rag_hits and intent_result.intent in (
+        IntentType.SEMANTIC_SEARCH, IntentType.STRUCTURED_QUERY,
+    ):
         from graph.rag_pipeline import hits_to_sources
         sources = hits_to_sources(rag_hits)
 
