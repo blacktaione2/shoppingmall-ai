@@ -110,7 +110,11 @@ def _patch_connection(rows):
 # ─────────────────────────────────────────────────────────────────────────────
 def test_builder_category_only():
     sql, binds = db.build_structured_query(category="운동화")
-    assert "WHERE CATEGORY = :category" in sql
+    assert "STATUS = 'ACTIVE'" in sql          # 판매중단 상품 항상 제외
+    assert "CATEGORY = :category" in sql
+    # [상품 카드 썸네일] SELECT 절에 IMAGE_URL 이 빠지면 STRUCTURED_QUERY 응답의
+    # 상품 카드에 썸네일이 안 뜨는 회귀가 생긴다(실사용 중 실제로 발생했던 버그).
+    assert "IMAGE_URL" in sql
     assert binds["category"] == "운동화"
     assert binds["limit_rows"] == 5
     assert "FETCH FIRST :limit_rows ROWS ONLY" in sql
@@ -156,7 +160,9 @@ def test_builder_combined_and():
 
 def test_builder_no_entities():
     sql, binds = db.build_structured_query()
-    assert "WHERE" not in sql                  # 조건 없으면 WHERE 절 자체가 없어야 함
+    # [판매중단 제외] STATUS='ACTIVE' 조건은 다른 조건이 없어도 항상 붙는다.
+    assert "WHERE STATUS = 'ACTIVE'" in sql
+    assert "CATEGORY =" not in sql and "PRICE <=" not in sql and "PRICE >=" not in sql
     assert "ORDER BY PRODUCT_ID ASC" in sql    # 기본 정렬
     assert binds == {"limit_rows": 5}          # limit 만 존재
     print("✅ test_builder_no_entities")
