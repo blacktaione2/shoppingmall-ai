@@ -79,7 +79,7 @@ async def event_stream(
            사용자가 재로그인 등 행동을 취해야 하는 상황이라 구분이 필요하다.
            그 외 모든 예외는 기존과 동일하게 일반 메시지로 감춘다.
       2) result.answer 를 청크로 분할 → event: chunk 로 순차 전송 (청크당 delay 만큼 대기)
-      3) 마지막에 event: done 으로 메타데이터(intent/confidence/session_id) 전송
+      3) 마지막에 event: done 으로 메타데이터(intent/confidence/session_id/sources) 전송
 
     :param pipeline_fn: async callable. await pipeline_fn(request) 가
                         .answer / .intent / .confidence 속성을 가진 객체를 반환해야 함.
@@ -113,5 +113,8 @@ async def event_stream(
             # getattr 로 접근: event_stream 은 .answer/.intent/.confidence 만 있으면
             # 되는 범용 함수라, session_id 가 없는 결과 객체도 그대로 지원한다.
             "session_id": getattr(result, "session_id", None),
+            # [상품 카드] SEMANTIC_SEARCH 검색 근거 상품(썸네일/상세링크용). 그 외
+            # 인텐트/결과 객체는 None 이라 빈 배열로 폴백(프론트는 빈 배열이면 카드 미표시).
+            "sources": [s.model_dump() for s in (getattr(result, "sources", None) or [])],
         },
     )
