@@ -150,7 +150,12 @@ async def structured_node(state: ShoppingState) -> dict:
     header = f"🛍️ 조건에 맞는 상품 {len(products)}개를 찾았어요!"
     lines = [_format_product_line(i + 1, p) for i, p in enumerate(products)]
     body = "\n\n".join(lines)
-    return {"raw_answer": f"{header}\n\n{body}"}
+    # [상품 링크] chat.py가 sources(상품 상세 링크·썸네일)를 만들 때 쓰도록
+    # rag_hits 재사용(semantic_node와 동일한 변환 함수/필드).
+    return {
+        "rag_hits": [_to_rag_hit(p) for p in products],
+        "raw_answer": f"{header}\n\n{body}",
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -204,9 +209,11 @@ def _to_rag_hit(product: dict) -> dict:
         "id": product.get("product_id"),
         "document": product.get("description") or "",
         "metadata": {
+            "product_id": product.get("product_id"),
             "product_name": product.get("product_name"),
             "category": product.get("category"),
             "price": product.get("price"),
+            "image_url": product.get("image_url") or "",
         },
         "distance": 0.0,
     }
@@ -359,7 +366,17 @@ async def semantic_node(state: ShoppingState) -> dict:
         return {"rag_hits": [], "raw_answer": _SEMANTIC_NO_HIT_MSG}
 
     answer = await rag_service.generate_rag_response(question, hits, history=history)
-    return {"rag_hits": hits, "raw_answer": answer}
+    # [상품 카드 정확도] 검색 후보(top-4)가 전부 답변 문장에 언급된다는 보장이
+    # 없다(개인화 취향 벡터 혼합 등으로 후보에 들어왔지만 LLM이 실제로는 언급을
+    # 안 한 상품도 있음). 텍스트에 실제로 상품명이 등장하는 후보만 sources/가드
+    # 검증 대상으로 남긴다 — _match_history_products 와 동일한 "실제 언급 확인"
+    # 원칙을 여기도 적용.
+    mentioned_hits = [
+        h for h in hits
+        if h.get("metadata", {}).get("product_name")
+        and h["metadata"]["product_name"] in answer
+    ]
+    return {"rag_hits": mentioned_hits, "raw_answer": answer}
 
 
 # ════════════════════════════════════════════════════════════════════════
