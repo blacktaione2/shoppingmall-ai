@@ -49,14 +49,20 @@ def _embed_text_for(row: dict) -> str:
     임베딩 대상 텍스트 결정.
     - 우선: description (LOB 변환 완료 문자열)
     - 폴백: product_name + category (description 이 NULL/공백인 경우)
+    - [Vision 태깅] image_caption 이 있으면 뒤에 이어붙인다 — 색상/소재/스타일
+      키워드가 텍스트 검색(BM25)·임베딩(Dense) 둘 다에 반영되도록.
     """
     desc = row.get("description")
     if desc and str(desc).strip():
-        return str(desc).strip()
-    name = (row.get("product_name") or "").strip()
-    category = (row.get("category") or "").strip()
-    fallback = f"{name} {category}".strip()
-    return fallback or name or "상품"
+        base = str(desc).strip()
+    else:
+        name = (row.get("product_name") or "").strip()
+        category = (row.get("category") or "").strip()
+        fallback = f"{name} {category}".strip()
+        base = fallback or name or "상품"
+
+    caption = (row.get("image_caption") or "").strip()
+    return f"{base} {caption}".strip() if caption else base
 
 
 async def main():

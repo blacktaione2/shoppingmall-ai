@@ -147,7 +147,8 @@ def fetch_all_products() -> list[dict]:
                DESCRIPTION,
                STOCK,
                IMAGE_URL,
-               STATUS
+               STATUS,
+               IMAGE_CAPTION
           FROM PRODUCT
          ORDER BY PRODUCT_ID
     """
@@ -165,6 +166,18 @@ def fetch_all_products() -> list[dict]:
     return products
 
 
+def update_image_caption(product_id: int, caption: str) -> None:
+    """Vision 태깅 결과(색상/소재/스타일 태그 + 짧은 설명을 합친 문자열)를 저장한다.
+
+    scripts/index_products_image.py 에서 이미지 임베딩과 같은 루프에서 호출된다.
+    """
+    sql = "UPDATE PRODUCT SET IMAGE_CAPTION = :caption WHERE PRODUCT_ID = :product_id"
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, {"caption": caption, "product_id": product_id})
+        conn.commit()
+
+
 def fetch_product_by_id(product_id) -> dict | None:
     sql = """
         SELECT PRODUCT_ID,
@@ -174,7 +187,8 @@ def fetch_product_by_id(product_id) -> dict | None:
                DESCRIPTION,
                STOCK,
                IMAGE_URL,
-               STATUS
+               STATUS,
+               IMAGE_CAPTION
           FROM PRODUCT
          WHERE PRODUCT_ID = :product_id
     """

@@ -36,7 +36,7 @@ except ImportError:
     pass
 
 from database import oracle_db
-from services import chroma_service, clip_service
+from services import chroma_service, clip_service, vision_tagging_service
 # 텍스트 컬렉션과 동일한 임베딩 텍스트 규칙 재사용(문서/메타 일관성)
 from scripts.index_products import _embed_text_for, _to_float
 
@@ -127,6 +127,14 @@ async def main():
             skipped_failed += 1
             logger.warning("이미지 처리 실패 → 스킵: product_id=%s url=%s (%s)", pid, image_url, e)
             continue
+
+        # [Vision 태깅] 이미 태깅된 상품은 재호출하지 않는다(비용 통제 — 재실행마다
+        # 매번 Vision API를 다시 부르지 않도록). 실패해도 CLIP 임베딩/인덱싱은 계속.
+        if not (row.get("image_caption") or "").strip():
+            caption = await vision_tagging_service.generate_image_caption(pil_image)
+            if caption:
+                await asyncio.to_thread(oracle_db.update_image_caption, pid, caption)
+                row = {**row, "image_caption": caption}
 
         text = _embed_text_for(row)          # 문서/재랭킹용 텍스트(텍스트 컬렉션과 동일)
         ids.append(str(pid))
