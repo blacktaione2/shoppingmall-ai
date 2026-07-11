@@ -135,6 +135,8 @@ async def main():
             if caption:
                 await asyncio.to_thread(oracle_db.update_image_caption, pid, caption)
                 row = {**row, "image_caption": caption}
+            # Vision API 호출 사이에 짧은 지연을 둬 TPM 레이트리밋 재발 방지
+            await asyncio.sleep(0.5)
 
         text = _embed_text_for(row)          # 문서/재랭킹용 텍스트(텍스트 컬렉션과 동일)
         ids.append(str(pid))

@@ -61,9 +61,15 @@ def _get_client() -> AsyncOpenAI:
 def _image_to_data_url(pil_image) -> str:
     """PIL.Image → base64 data URL. 원격/로컬 URL 접근성과 무관하게 항상 동작하도록,
     이미 로드된 PIL 이미지를 그대로 재사용한다(CLIP 임베딩에 쓰는 것과 동일 객체).
+
+    원본을 그대로 보내면 고해상도 상품 사진 기준 요청당 토큰 소모가 커서 TPM
+    레이트리밋을 유발하므로, 색상/소재/스타일 판별에는 불필요한 해상도를 낮춰
+    전송한다(원본 객체는 CLIP 임베딩에 재사용되므로 copy() 후 축소 — mutate 방지).
     """
+    img = pil_image.copy()
+    img.thumbnail((512, 512))
     buf = io.BytesIO()
-    pil_image.save(buf, format="JPEG")
+    img.save(buf, format="JPEG")
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
 
@@ -82,7 +88,7 @@ async def generate_image_caption(pil_image) -> str | None:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "이 상품 이미지를 분석해 색상/소재/스타일/설명을 알려줘."},
-                    {"type": "image_url", "image_url": {"url": _image_to_data_url(pil_image)}},
+                    {"type": "image_url", "image_url": {"url": _image_to_data_url(pil_image), "detail": "low"}},
                 ],
             }],
             response_format=_TAG_SCHEMA,
