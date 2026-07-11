@@ -139,6 +139,10 @@ def build_chunk_documents(row: dict) -> list[dict]:
     category = base_meta["category"] or "(카테고리 없음)"
     prefix = f"[{name} | {category}] "
 
+    # overlap이 threshold 이상이면 RecursiveCharacterTextSplitter가
+    # ValueError("chunk_overlap > chunk_size")로 죽는다. .env에서 THRESHOLD만
+    # 낮추고 OVERLAP은 그대로 둔 조합에서 실제로 재현됨 — threshold 미만으로 clamp.
+    overlap = min(_chunk_overlap_chars(), max(threshold - 1, 0))
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=threshold,
         chunk_overlap=_chunk_overlap_chars(),

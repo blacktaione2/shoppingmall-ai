@@ -841,3 +841,182 @@ provider halluc_bait 전부 0%), ⑦재고 락 부하테스트(성공10/거절40
 - PRESENTATION_SCRIPT.md: 오늘 작업 요약 섹션 추가, 테스트 현황(10절) 표
   재동기화(154→171).
 
+## 32. [Slack MCP 연동] 기존 MCP 인프라에 실제 첫 외부 서버 연결 — 환불 알림 이중화
+
+### 배경
+PHASE 1-⑨에서 만들어둔 MCP 인프라(langchain-mcp-adapters 기반)는 "연결할 외부
+서비스가 확정되지 않아 인프라만 완성된 상태"였다. 이번에 Slack을 실제 첫 MCP
+서버로 연결해서, 기존 Gmail 환불 알림에 Slack 채널 알림을 추가했다(동시 발송,
+`asyncio.gather(..., return_exceptions=True)`로 서로 독립적 — 한쪽이 실패해도
+다른 쪽엔 영향 없음).
+
+### 겹겹이 있었던 문제와 해결 순서
+
+**1) `send_refund_admin_slack` 함수 중복 정의** — `services/notification_service.py`에
+같은 이름의 함수가 두 번 정의돼 있어, 파이썬이 뒤 정의로 덮어썼다. 그런데 뒤
+정의가 앞 정의와 **다른 환경변수 이름**(`SLACK_MCP_REFUND_CHANNEL_ID` vs
+`SLACK_REFUND_CHANNEL_ID`)을 써서, 실제 `.env`에 설정한 값을 무시하고 항상
+"미설정"으로 조용히 스킵되고 있었다. `pyflakes`가 `redefinition of unused` 로
+정확히 잡아냈다 — 더 견고한(is_mcp_enabled 체크, 타임아웃 처리, 로그 레벨 구분)
+앞 정의만 남기고 제거. `.env.example`에도 같은 이름 중복이 있어 같이 정리.
+
+**2) `mcp_config.json`의 예시(placeholder) 서버가 실제 서버까지 막음** —
+`weather`(`mcp_server_weather`, 미설치)와 `search`(`https://mcp.example.com/sse`,
+실제 존재하지 않는 예시 URL)가 실제로 `mcp_config.json`에 등록된 채 남아있어서,
+디버그 결과 `tool_names: []`로 나옴. 안 쓰는 예시 서버 2개를 지우고 `slack`만
+남김(이 부분은 진짜 원인은 아니었던 것으로 최종 확인 — 아래 4번이 진짜 원인).
+
+**3) Slack Bot OAuth 스코프 부족(4단계에 걸쳐 발견)** — `slack-mcp-server`(도구
+자체)가 부팅 시 `users`/`channels`(공개+비공개+DM+그룹DM 통합) 목록을 캐싱하려고
+시도하는데, 필요한 스코프가 한 번에 다 안 보이고 단계적으로 드러났다:
+`users:read` → (그다음) `channels:read`/`groups:read` → (그래도 안 됨, `getChannelsMultiType`가
+DM/그룹DM까지 통합 조회) → `im:read`/`mpim:read` 추가 후 최종 해결. 매 스코프
+추가마다 Slack 워크스페이스 재설치(reinstall) 필요.
+(참고: `chat:write`는 실제 메시지 발송에 필요, 채널에 봇을 초대하는 것도 별도로 필요했음)
+
+**4) 서버(venv)에 `langchain-mcp-adapters` 패키지 자체가 미설치** — 위 1~3번을
+전부 고쳐도 `tool_names: []`가 계속 나와서 원인이 안 잡혔는데, 임시 디버그
+엔드포인트(`GET /admin/debug/mcp-tools`, 확인 후 제거)로 `get_mcp_tools()`가
+삼키던 예외를 직접 노출시켜서 `ModuleNotFoundError: No module named
+'langchain_mcp_adapters'`를 확인. 서버에 패키지 자체가 설치돼 있지 않았음.
+
+**5) 패키지 설치 중 `starlette` 버전 충돌** — `pip install langchain-mcp-adapters`를
+버전 제약 없이 실행하니 의존성인 `sse-starlette`가 최신 버전을 끌어오면서
+`starlette`를 `0.45.3`→`1.3.1`로 강제 업그레이드, `fastapi==0.115.8`이 요구하는
+`starlette<0.46.0`과 충돌해 **서버 기동 자체가 실패**(`Connection refused`).
+`starlette==0.45.3`으로 즉시 롤백 후 서비스 복구. 이후 `pip install
+"starlette<0.46.0,>=0.40.0" langchain-mcp-adapters`처럼 **starlette 버전을
+명시적으로 같이 지정**해서 재설치하니, pip이 알아서 호환되는 낮은
+`sse-starlette`(3.0.3)를 선택해 `starlette 0.45.3`을 유지한 채 정상 설치됨
+(pip dry-run으로 사전에 호환 조합이 실제로 존재함을 확인 후 진행).
+
+### 검증
+`GET /admin/debug/mcp-tools`로 `tool_names`에 `conversations_add_message`
+포함 14개 도구가 정상 로드됨을 확인. 실제로 챗봇에서 "환불해줘" 실행해
+Slack 채널과 Gmail 양쪽에 알림이 도착하는 것까지 최종 확인.
+
+### 재발 방지
+`requirements.txt`에 아래 버전 제약을 명시해, 향후 서버 재구축 시 이번과
+같은 순서로 문제를 다시 겪지 않도록 함:
+langchain-mcp-adapters==0.3.0
+starlette>=0.40.0,<0.46.0
+### 파일
+`services/notification_service.py`, `.env.example`, `mcp_config.json`(서버 로컬,
+git 비대상), `requirements.txt`
+
+## 33. [기능] Vision 이미지 태깅(gpt-4o-mini) + Context-Rich 프리픽스 청킹
+
+상품 검색 품질을 높이기 위해 두 기능을 추가했다. 하나는 상품 이미지를 Vision
+LLM으로 분석해 텍스트 검색에 반영하는 것(색상/소재/스타일 키워드는 기존
+`description`만으로는 잡히지 않는 경우가 많았음), 다른 하나는 상품 설명이 긴
+경우 벡터 검색 품질이 떨어지는 문제(임베딩 1건이 너무 길면 관련성 희석)를
+막는 청킹이다.
+
+### 1) Vision 이미지 태깅 (`services/vision_tagging_service.py` 신규)
+- `gpt-4o-mini` + Structured Outputs(JSON Schema, `strict: True`)로 이미지 1건당
+  색상/소재/스타일 키워드 3~5개/한줄 설명을 생성해 하나의 문자열로 합친 뒤
+  `PRODUCT.IMAGE_CAPTION`에 저장.
+- 호출 시점은 실시간 챗봇 응답 경로가 아니라 `scripts/index_products_image.py`의
+  배치 인덱싱 루프뿐(상품 등록/재색인 시점, 상품당 1회) — 레이턴시/비용 부담 없음.
+- 이미 `IMAGE_CAPTION`이 있는 상품은 호출 측에서 건너뛰어 재실행마다 다시
+  태깅하지 않도록 비용 통제.
+- `chunking_service._embed_text_for()`가 `image_caption`을 임베딩 텍스트 뒤에
+  이어붙여, BM25(키워드)·Dense(임베딩) 검색 둘 다에 반영되도록 함.
+- 실패(API 오류 등) 시 해당 상품만 스킵하고 배치 전체는 계속 진행(장애 격리).
+
+### 2) TPM 레이트리밋 대응 (같은 세션에서 실사용 중 발견)
+서버에서 상품 22건을 재색인하며 원본 고해상도 이미지를 축소 없이 그대로
+base64 전송했더니, 그것만으로 `gpt-4o-mini` 조직 TPM(분당 20만 토큰) 한도를
+반복 초과해 8건이 캡션 실패로 스킵됐다(CLIP 이미지 임베딩 자체는 설계상
+캡션 실패와 무관하게 22건 전부 성공 — 검색 기능 자체엔 영향 없었음).
+- `_image_to_data_url()`: 전송 전 이미지를 512px로 축소(`thumbnail`), 원본은
+  CLIP 임베딩에도 재사용되는 객체라 `copy()` 후 축소해 mutate 방지.
+- `generate_image_caption()`: `image_url`에 `detail: "low"` 명시해 요청당
+  토큰 소모를 고정 저비용으로 낮춤.
+- `scripts/index_products_image.py`: 실제로 Vision API를 호출한 경우에만
+  다음 호출까지 `asyncio.sleep(0.5)` 삽입해 재발 방지.
+
+### 3) Context-Rich 프리픽스 청킹 (`services/chunking_service.py` 신설)
+- `build_chunk_documents(row)` 단일 출처 함수 — `scripts/index_products.py`
+  (전체 재색인)와 `routers/admin.py`의 `reindex_product`(단건 재색인) 둘 다
+  이 함수 하나만 호출해, 청킹 로직이 두 곳에 따로 있어 동작이 갈라지는 문제를
+  구조적으로 방지.
+- 설명이 짧으면(`.env CHUNK_THRESHOLD_CHARS`, 기본 500자 이하) 지금까지와
+  동일하게 문서 1개만 반환(현재 카탈로그는 상품 설명 200~250자라 전량 이
+  경로 — 회귀 없음).
+- 임계값을 넘는 설명만 `RecursiveCharacterTextSplitter`
+  (`chunk_size=threshold`, `chunk_overlap=.env CHUNK_OVERLAP_CHARS` 기본 50)로
+  분할하고, 청크마다 `"[상품명 | 카테고리] "` 프리픽스를 강제 주입해 임베딩
+  (문맥 없이 잘린 청크만 벡터화되는 것 방지).
+- 청크 문서 id는 `f"{product_id}_chunk_{n}"`으로 원본 상품 id와 구분.
+  metadata는 원본 상품 것을 그대로 복사(하류인 재고 필터·sources 변환이
+  청크 여부를 몰라도 그대로 동작)하고, `chunk_index`/`chunk_count`(디버깅용),
+  `chunk_text_raw`(프리픽스 없는 순수 원문 — `rag_service.build_product_context`가
+  상품명/카테고리 중복 노출 없이 이 필드를 우선 사용)를 추가.
+- 삭제/재색인 시 청크 개수가 바뀔 수 있어, 기존 청크(orphan) 제거는 이 함수의
+  책임이 아니라 호출 측이 upsert 전 `chroma_service.delete_product(product_id)`를
+  먼저 호출하는 delete-then-upsert 패턴으로 처리(`delete_product`도 id 1개가
+  아니라 `product_id` 메타데이터 기준 삭제로 변경됨).
+
+### 검증
+- `py_compile`로 신규/수정 파일 문법 오류 없음 확인.
+- `index_products_image.py` 재실행 결과: "이미지 임베딩 대상: 성공 22건 /
+  URL없음 0건 / 실패 0건", ChromaDB `products_image` 22건 upsert 완료(서버
+  로그로 확인).
+- **[알려진 공백]** `chunking_service.py`/`vision_tagging_service.py`를 직접
+  겨냥한 pytest가 아직 없음(전수 검색 결과 0건). 두 기능 다 회귀 위험이 있는
+  로직(임계값 분기, 프리픽스 주입, TPM 재시도)이라 별도 세션에서 단위 테스트
+  추가를 권장.
+
+### 파일
+`services/vision_tagging_service.py`(신규), `services/chunking_service.py`(신규),
+`scripts/index_products_image.py`, `scripts/index_products.py`(`_embed_text_for`/
+`_to_float`가 `chunking_service.py`로 이동 후 재노출), `routers/admin.py`
+(`reindex_product`가 `chunking_service.build_chunk_documents()` 호출)
+
+## 34. [테스트] chunking_service/vision_tagging_service 단위 테스트 추가 + [버그] overlap>threshold 크래시 수정
+
+33번에서 "알려진 공백"으로 남겨뒀던 두 신규 서비스(`chunking_service.py`,
+`vision_tagging_service.py`)에 단위 테스트를 추가하는 과정에서, 실제 크래시
+버그 1건을 발견해 같이 수정했다.
+
+### 발견한 버그: `.env` THRESHOLD/OVERLAP 조합에 따라 청킹이 예외로 죽음
+`build_chunk_documents()`가 `_chunk_overlap_chars()`(기본 50)를 clamp 없이
+그대로 `RecursiveCharacterTextSplitter(chunk_overlap=...)`에 넘기고 있었다.
+`CHUNK_THRESHOLD_CHARS`를 50 미만으로 낮추고 `CHUNK_OVERLAP_CHARS`는 그대로
+두는 조합(예: threshold=30, overlap=50 그대로)에서 재현:
+
+현재 배포 `.env` 기본값(threshold=500, overlap=50)에서는 발생하지 않아 실사용
+장애로 이어지진 않았지만, 나중에 threshold를 낮추는 운영 변경 시 해당 상품의
+재색인이 전부 실패(예외 전파, 배치 중단)하는 잠재 버그였다.
+
+**수정**: `build_chunk_documents()`에서 splitter 생성 직전에
+`overlap = min(_chunk_overlap_chars(), max(threshold - 1, 0))`로 clamp —
+overlap이 항상 threshold 미만이 되도록 보장. 기본값 조합(50 < 500)에서는
+동작 변화 없음(회귀 없음).
+
+### 신규 테스트
+- `tests/test_chunking_service.py`(17개): 임계값 이하/초과 분기, 청크
+  id(`{pid}_chunk_{n}`)·프리픽스(`"[상품명 | 카테고리] "`)·`chunk_index`/
+  `chunk_count`/`chunk_text_raw` 메타, 이름/카테고리 누락 시 폴백 문구,
+  `_embed_text_for()`의 description/name+category/image_caption 우선순위,
+  `_chunk_threshold_chars()`/`_chunk_overlap_chars()`의 `.env` 파싱·잘못된
+  값 폴백, 그리고 이번에 고친 overlap>threshold 회귀 재현 케이스.
+- `tests/test_vision_tagging_service.py`(5개): 정상 응답 조합, API 예외 시
+  `None` 반환, 요청에 `detail: "low"` 포함 확인(TPM 대응), 전송 이미지가
+  512px 이하로 축소되는지 + 원본 이미지 객체는 mutate 안 되는지(CLIP 임베딩
+  재사용 보호). `_get_client()`를 monkeypatch해 실제 OpenAI 호출 없이 격리
+  (`test_voice_endpoints.py`와 동일한 전략), 프로젝트 관례대로 pytest-asyncio
+  없이 `asyncio.run()`으로 실행.
+
+### 검증
+- 신규 22개 전부 통과(`pytest tests/test_chunking_service.py
+  tests/test_vision_tagging_service.py -v`).
+- `py_compile`로 수정 파일 문법 오류 없음 확인.
+
+### 문서
+- ROADMAP.md: 테스트 현황 표에 두 파일 추가, "알려진 공백" 문구 제거.
+
+### 파일
+`services/chunking_service.py`(overlap clamp 수정),
+`tests/test_chunking_service.py`(신규), `tests/test_vision_tagging_service.py`(신규)

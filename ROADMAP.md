@@ -189,6 +189,16 @@
 - 빈 도구 목록 폴백: MCP 서버 미연결 시 로컬 도구만으로 동작
 - lazy mcp-agent 빌드: `MCP_ENABLED=true`일 때만 agent 구성
 - 엔드포인트: `POST /chat/mcp-agent`
+- MCP 연동 인프라와 엔드포인트까지 구현했고, 외부 MCP 서버 URL만 config에 등록하면
+- 코드 변경 없이 즉시 연동됩니다. **Slack을 실제 첫 MCP 서버로 연결**했다 —
+- 환불 신청 시 Gmail과 동시에 Slack 채널로도 알림이 가도록 `services/notification_service.py`
+- 에 `send_refund_admin_slack()`을 추가하고, `complaint_node`에서 두 알림을
+- `asyncio.gather(..., return_exceptions=True)`로 병렬 발송한다(한쪽 실패가
+- 다른 쪽에 영향 없음). `korotovsky/slack-mcp-server`(Bot Token 방식)를 쓰며,
+- Bot Token Scopes로 `chat:write`(메시지 발송), `users:read`/`channels:read`/
+- `groups:read`/`im:read`/`mpim:read`(서버 부팅 시 필요한 통합 채널 캐싱)가 필요하다.
+- `langchain-mcp-adapters` 설치 시 `starlette` 버전이 fastapi 요구 범위를 벗어나지
+- 않도록 `requirements.txt`에 버전 제약(`starlette>=0.40.0,<0.46.0`)을 명시해뒀다.
 
 **파일**: `graph/mcp_tools.py`, `routers/mcp_agent_chat.py`
 
@@ -346,7 +356,7 @@
 
 ---
 
-## PHASE 3 이후 — 배포 직전 운영 보강 (동시성·멱등성·UI)
+## 운영 보강 (동시성·멱등성·UI)
 
 배포 전 최종 점검(race condition / partial-write / 멱등성 3개 축 전수 리뷰)에서
 나온 보강 라운드. 상세 이력은 IMPROVEMENTS.md 24~25번.
@@ -383,7 +393,7 @@
 
 ---
 
-## PHASE 3 이후 — 실측(①~⑨) 완료 + 멀티턴 근본 버그 수정
+## 실측(①~⑨) 완료 + 멀티턴 근본 버그 수정
 
 배포 후 측정 라운드에서 성능/비용/품질 지표 9개 항목을 전부 실측하고,
 그 과정에서 실제 사용 시나리오(멀티턴 대화)를 반복 테스트하다 발견된 버그들을
@@ -435,22 +445,7 @@ history를 실어 보내는 코드가 없었다. 그 결과 게스트/로그인 
 
 ---
 
-## PHASE 3 이후 — 챗봇 답변 버그 수정 + 미연동 기능 3건 연동
-
-실사용 중 발견된 챗봇 답변 버그(조사 오류, 가격 필터링 0건, 멀티턴 조건 이월)를
-수정하고, 백엔드 코드는 완성돼 있었지만 프론트엔드/운영 설정이 빠져 있던
-기능 3건(STT/TTS, 환불 관리자 알림, CLIP 이미지 검색)을 실제로 연동했다.
-상세 이력은 IMPROVEMENTS.md 27번 참고.
-
-### 챗봇 답변 버그 3건
-- **조사(은/는) 오류**: 재고/품절 답변에 "은"이 하드코딩돼 "니트은" 같은
-  부자연스러운 문장 생성 → 받침 유무 판별 함수(`_josa_eun_neun`)로 결정적 수정
-- **가격 필터링 0건**: LLM이 category와 keywords에 같은 카테고리 단어를 중복
-  추출하면 `PRODUCT_NAME LIKE` 조건이 끼어들어 실제 매칭 상품이 있어도 전부
-  걸러짐 → `build_structured_query()`에서 category와 정확히 같은 keyword 제거
-- **멀티턴 조건 이월**: RAG 답변이 이전 턴의 가격/카테고리 조건을 새 질문에도
-  계속 적용 → `SYSTEM_PROMPT`에 "조건은 이번 질문 기준으로만 판단" 규칙 추가
-  (프롬프트 보강, 완전한 결정적 차단은 아님)
+## 미연동 기능 연동
 
 ### 미연동 기능 3건 실제 연동
 - **STT/TTS**: `routers/voice.py`의 `/chat/voice`는 이미 있었지만 챗봇 위젯에
@@ -470,11 +465,53 @@ history를 실어 보내는 코드가 없었다. 그 결과 게스트/로그인 
   하나만 이 정책에 연결돼 있어, 활성화해도 이 노드만 저비용 모델로 분기되고
   나머지 인텐트는 기존과 동일
 
-### Spring Boot 버그 2건
-- **회원가입 500 에러**: 이메일 중복 시 `DataIntegrityViolationException`이
-  그대로 전파되던 것을 try-catch로 잡아 폼으로 복귀 + 에러 메시지 표시
-- **마이페이지 헤더 불일치**: 구버전 `layouts/header`/`layouts/footer` 사용을
-  상품 목록 페이지와 동일한 `fragments/header`/`fragments/footer`로 통일
+---
+
+## Vision 이미지 태깅 + Context-Rich 프리픽스 청킹
+
+> 상세 이력은 IMPROVEMENTS.md 33번 참고.
+
+### Vision 이미지 태깅 (gpt-4o-mini Structured Outputs)
+
+**구현 내용**:
+- `gpt-4o-mini` + Structured Outputs(JSON Schema, `strict`)로 상품 이미지 1건당
+  색상/소재/스타일 키워드 3~5개/한줄 설명 생성 → `PRODUCT.IMAGE_CAPTION` 저장
+- 호출 시점: `scripts/index_products_image.py` 배치 인덱싱 루프뿐(실시간 챗봇
+  응답 경로 아님, 상품당 1회) — 이미 태깅된 상품은 재호출하지 않아 재실행마다
+  비용 발생하지 않음
+- `image_caption`은 임베딩 텍스트 뒤에 이어붙여 BM25(키워드)·Dense(임베딩)
+  검색 둘 다에 반영
+- **TPM 레이트리밋 대응**: 원본 고해상도 이미지를 축소 없이 base64 전송하면
+  22건 순차 처리만으로도 조직 TPM(분당 20만 토큰) 한도 초과 → 캡션 일부 실패
+  발생. 전송 전 512px 축소(`thumbnail`) + `detail: "low"` 지정 + 호출 간
+  0.5초 지연으로 해결(CLIP 이미지 임베딩 자체는 캡션 실패와 무관하게 항상
+  전건 성공하도록 이미 설계돼 있어 검색 기능 자체엔 영향 없었음)
+
+**파일**: `services/vision_tagging_service.py`, `scripts/index_products_image.py`
+
+### Context-Rich 프리픽스 청킹
+
+**구현 내용**:
+- `services/chunking_service.py`의 `build_chunk_documents()` 단일 출처 함수 —
+  `scripts/index_products.py`(전체 재색인)와 `routers/admin.py`의
+  `reindex_product`(단건 재색인) 둘 다 이 함수 하나만 호출(로직 이원화로
+  배치/단건 동작이 갈라지는 문제 방지)
+- 설명이 짧으면(`.env CHUNK_THRESHOLD_CHARS`, 기본 500자 이하) 기존과 동일하게
+  문서 1개만 반환 — 현재 카탈로그(상품 설명 200~250자)는 전량 이 경로라 회귀 없음
+- 임계값 초과 시 `RecursiveCharacterTextSplitter`(`chunk_overlap`
+  `.env CHUNK_OVERLAP_CHARS` 기본 50)로 분할하고, 청크마다
+  `"[상품명 | 카테고리] "` 프리픽스를 강제 주입해 임베딩(문맥 없이 잘린 청크만
+  벡터화되는 것 방지)
+- 청크 id는 `f"{product_id}_chunk_{n}"`, metadata는 원본 상품 것을 그대로
+  복사(하류가 청크 여부 몰라도 동작)하고 `chunk_index`/`chunk_count`/
+  `chunk_text_raw`(프리픽스 없는 순수 원문, LLM 프롬프트용) 추가
+- 삭제/재색인 시 청크 개수 변화로 생기는 orphan 청크는 호출 측이 upsert 전
+  `chroma_service.delete_product(product_id)`(이제 id 1개가 아니라
+  `product_id` 메타데이터 기준 삭제)를 먼저 호출하는 delete-then-upsert
+  패턴으로 처리 — 청킹 함수 자체의 책임 범위 밖
+
+**파일**: `services/chunking_service.py`, `scripts/index_products.py`,
+`routers/admin.py`
 
 ---
 
@@ -532,7 +569,9 @@ chromadb.service (먼저 기동)
 | test_semantic_price_superlative.py | 10개 | 멀티턴 가격 비교·재고/가격 참조 질문 결정적 처리(Function Calling) |
 | test_guard_markdown_strip.py | 2개 | guard_node 마크다운 굵게 강제 제거 |
 | scripts/test_structured_offline.py | 17개 | STRUCTURED_QUERY 오프라인 테스트(쿼리 빌더/핸들러, 이전 표에서 누락돼 있었음 — 실측 재동기화로 추가) |
-| **소계(pytest)** | **171개** | **169개 통과 + MCP 2개 실패(알려진 환경 제약)** |
+| test_chunking_service.py | 17개 | Context-Rich 프리픽스 청킹(임계값 분기·프리픽스·청크 메타·`.env` 파싱·overlap>threshold 회귀) |
+| test_vision_tagging_service.py | 5개 | Vision 이미지 태깅(응답 조합·API 예외·detail=low·이미지 축소/mutate 방지) |
+| **소계(pytest)** | **193개** | **193개 통과** |
 | test_order_handler_member_id.py | 5개 시나리오 | order_handler member_id 연동(비-pytest 독립 스크립트, `python tests/test_order_handler_member_id.py`로 수동 실행) |
 
 > 위 표는 `grep`으로 소스를 직접 스캔해 산출한 실측치다(실측 기준 재동기화 —
