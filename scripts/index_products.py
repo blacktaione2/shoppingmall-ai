@@ -44,7 +44,6 @@ from services.chunking_service import _to_float, _embed_text_for, build_chunk_do
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("index_products")
 
-
 async def main():
     # 0) ChromaDB 연결 확인
     try:
