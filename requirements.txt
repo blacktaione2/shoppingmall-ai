@@ -19,6 +19,12 @@ langgraph==1.2.6
 langchain-core==1.4.8
 langchain-openai==1.3.3
 
+# [대규모 청크 처리] services/chunking_service.py 가 모듈 로드 시점에
+# RecursiveCharacterTextSplitter 를 import 한다 — 현재 카탈로그 데이터로는
+# 청킹 코드 경로 자체가 안 타더라도, import 실패 시 서버가 기동을 못 하므로
+# 선택이 아니라 필수 설치로 둔다.
+langchain-text-splitters
+
 # [PHASE 3-①] Redis 체크포인터 (영속 멀티턴 메모리) — 선택 설치
 # REDIS_URL 을 .env 에 설정해 Redis 영속화를 쓸 때만 필요.
 # REDIS_URL 이 비어 있으면 MemorySaver 폴백이라 설치 불필요(기존 동작 유지).
@@ -67,3 +73,6 @@ langchain-openai==1.3.3
 # [하이브리드 검색] BM25 Sparse 후보 (순수 Python, torch 불필요)
 # BM25_ENABLED=true 일 때 사용. false(기본)면 import 되지 않음.
 rank_bm25==0.2.2
+
+langchain-mcp-adapters==0.3.0
+starlette>=0.40.0,<0.46.0

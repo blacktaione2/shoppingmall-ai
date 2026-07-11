@@ -36,7 +36,12 @@ def build_product_context(hits: list[dict]) -> str:
         category = meta.get("category") or "(카테고리 없음)"
         price = meta.get("price")
         price_str = f"{int(price):,}원" if isinstance(price, (int, float)) else "(가격 정보 없음)"
-        description = hit.get("document") or meta.get("description") or "(설명 없음)"
+        # [대규모 청크 처리] 청크 문서의 document 필드는 "[상품명 | 카테고리] 청크원문"
+        # 형태라, 위에서 이미 "상품명"/"카테고리" 줄로 따로 보여준 값이 "설명" 줄에도
+        # 프리픽스로 중복 노출된다. chunk_text_raw(프리픽스 없는 순수 청크 원문)가
+        # 있으면 그것을 우선 쓴다 — 임계값 이하(비청크) 상품은 이 필드가 없어 기존과
+        # 동일하게 document 를 그대로 사용한다(회귀 없음).
+        description = meta.get("chunk_text_raw") or hit.get("document") or meta.get("description") or "(설명 없음)"
         lines.append(
             f"[상품 {idx}]\n"
             f"- 상품명: {name}\n"

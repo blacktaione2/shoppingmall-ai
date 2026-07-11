@@ -188,6 +188,22 @@ async def search_and_rerank(query: str, top_n: int = 4, member_id: int | None = 
 
     text_candidates = await chroma_service.search_similar(query_embedding, n_results=n_candidates)
 
+    # 1-2) [대규모 청크 처리] id 를 product_id 기준으로 정규화한 뒤, CLIP/BM25 플래그와
+    # 무관하게 항상 자체 중복 제거를 먼저 수행한다.
+    # [배경] 긴 설명 상품은 청크 문서(id=f"{product_id}_chunk_{n}")로 나뉘어 저장될 수
+    # 있는데, 아래 _merge_dedup 호출은 원래 CLIP_SERVING_ENABLED=true 일 때만 실행된다.
+    # 그 플래그가 꺼진(기본값) 상태에서는 청크 정규화만 해봤자 병합이 안 일어나
+    # 같은 상품의 여러 청크가 서로 다른 hit 로 top_n 슬롯을 나눠 차지해 검색 다양성을
+    # 해칠 수 있다. 그래서 여기서 빈 이미지 후보([])와 무조건 병합해 자체 dedup만
+    # 강제한다(_merge_dedup 은 "distance 최솟값 채택" 규칙이라 청크 dedup 에도 그대로
+    # 맞는다). 임계값 이하 상품(현재 카탈로그 전량)은 id 가 원래도 str(product_id)라
+    # 이 정규화/병합이 값을 바꾸지 않는다(회귀 없음).
+    for hit in text_candidates:
+        pid = hit.get("metadata", {}).get("product_id")
+        if pid is not None:
+            hit["id"] = str(pid)
+    text_candidates = _merge_dedup(text_candidates, [])
+
     # 2) 이미지 컬렉션 검색(플래그 ON 일 때만, 실패 시 텍스트로 폴백)
     if clip_service.is_serving_enabled():
         try:

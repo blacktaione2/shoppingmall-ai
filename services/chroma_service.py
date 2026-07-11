@@ -100,6 +100,20 @@ def _delete_sync(ids, collection_name=COLLECTION_NAME):
     return col.count()
 
 
+def _delete_by_product_sync(product_id, collection_name=COLLECTION_NAME):
+    """[청크 대응] product_id 메타데이터 필터로 상품 1건에 속한 문서를 전부 삭제.
+
+    [배경] 대규모 청크 처리 도입 후, 상품 1건이 ChromaDB 문서 1개(id=str(product_id))가
+    아니라 N개(id=f"{product_id}_chunk_0..N")로 저장될 수 있다. id 하나만 지우는
+    기존 _delete_sync 방식으로는 나머지 청크가 orphan 으로 영구 잔존한다.
+    where 필터 삭제는 실제 청크 개수를 몰라도(0개~N개 어느 쪽이든) 그 상품에 속한
+    문서를 전부 제거하므로 상품 삭제/재색인(delete-then-upsert) 양쪽에서 안전하다.
+    """
+    col = _get_collection(collection_name)
+    col.delete(where={"product_id": int(product_id)})
+    return col.count()
+
+
 def _heartbeat_sync():
     return _get_client().heartbeat()
 
@@ -172,9 +186,15 @@ async def delete_product(product_id) -> int:
 
     관리자가 Spring Boot 에서 상품을 삭제하면 FastApiSyncService 가
     DELETE /admin/products/{id} 를 호출하고, 그 핸들러(routers/admin.py)가 이 함수를 쓴다.
-    id 는 인덱싱 시점과 동일하게 문자열(str(product_id))로 맞춘다(index_products.py 규칙).
+
+    [청크 대응] id 하나(str(product_id))만 지우던 방식에서 product_id 메타데이터
+    필터 삭제로 변경했다 — 대규모 청크 처리 도입으로 상품 1건이 여러 문서
+    (f"{product_id}_chunk_0..N")로 저장될 수 있어, 실제 청크 개수와 무관하게
+    그 상품에 속한 문서를 전부 제거해야 orphan 이 안 남는다.
+    routers/admin.py 의 reindex_product() 도 upsert 전에 이 함수로 기존 문서를
+    먼저 지우는 delete-then-upsert 패턴을 쓴다(청크 수가 바뀌어도 안전).
     """
-    return await asyncio.to_thread(_delete_sync, [str(product_id)])
+    return await asyncio.to_thread(_delete_by_product_sync, product_id)
 
 
 # ---------------- 외부 공개 async API (이미지 컬렉션, 신규) ----------------

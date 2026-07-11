@@ -36,9 +36,10 @@ from pydantic import BaseModel, Field
 
 from database.oracle_db import fetch_product_by_id, fetch_all_products
 from services import embed_service, chroma_service, bm25_service
+from services.chunking_service import build_chunk_documents
 from graph.metrics import summarize_metrics
-# 최초 인덱싱과 동일한 메타데이터/텍스트 규칙을 공유(중복 구현 방지)
-from scripts.index_products import _embed_text_for, _to_float, main as reindex_all_main
+# 전체 재색인(POST /admin/products/reindex-all)은 scripts/index_products.main() 재사용
+from scripts.index_products import main as reindex_all_main
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,18 @@ class SyncResponse(BaseModel):
 @router.post("/products/reindex", response_model=SyncResponse,
              dependencies=[Depends(verify_admin_key)])
 async def reindex_product(req: ReindexRequest) -> SyncResponse:
-    """등록/수정된 상품 1건을 Oracle 에서 읽어 ChromaDB 에 upsert(재색인)한다."""
+    """등록/수정된 상품 1건을 Oracle 에서 읽어 ChromaDB 에 upsert(재색인)한다.
+
+    [대규모 청크 처리] build_chunk_documents() 가 설명 길이에 따라 문서 1개
+    (짧은 설명, 현재 카탈로그 전량) 또는 N개(긴 설명 — 프리픽스 삽입된 청크)를
+    돌려준다. scripts/index_products.py(전체 재색인)와 동일 함수를 써서 두 경로의
+    청킹 동작이 갈라지지 않게 한다.
+
+    [delete-then-upsert] upsert 전에 chroma_service.delete_product() 로 이 상품의
+    기존 문서를 '전부'(청크 개수 무관) 먼저 지운다. 상품 설명을 수정해 청크 개수가
+    바뀌는 경우(예: 3개 → 2개, 혹은 임계값 아래로 짧아짐)에도 옛 청크가 orphan 으로
+    남지 않도록 하기 위함이다.
+    """
     # 1) Oracle 단건 조회 (동기 → 스레드풀)
     row = await run_in_threadpool(fetch_product_by_id, req.product_id)
     if row is None:
@@ -88,38 +100,27 @@ async def reindex_product(req: ReindexRequest) -> SyncResponse:
         raise HTTPException(status_code=404, detail=f"PRODUCT_ID={req.product_id} 상품을 찾을 수 없습니다.")
 
     pid = row.get("product_id")
-    text = _embed_text_for(row)                       # description 우선, 폴백 규칙 동일
 
-    # 2) 단건 임베딩
-    embedding = await embed_service.get_embedding(text)
+    # 2) 청크 문서 구성(짧은 설명이면 길이 1, 길면 프리픽스 삽입된 N개)
+    docs = build_chunk_documents(row)
 
-    # 3) 메타데이터 구성 (index_products.py 와 동일 규칙)
-    metadata = {
-        "product_id":   int(pid),
-        "product_name": row.get("product_name") or "",
-        "category":     row.get("category") or "",
-        "price":        _to_float(row.get("price")),
-        "description":  str(row.get("description")) if row.get("description") else "",
-        "stock":        int(row.get("stock")) if row.get("stock") is not None else 0,
-        # [판매중단 필터용] SEMANTIC_SEARCH 최종 후보 단계(rag_pipeline)에서 재고
-        # 필터와 함께 이 값으로 판매중단 상품을 제외한다.
-        "status":       row.get("status") or "ACTIVE",
-        # 검색 결과 카드용 이미지 URL(텍스트 컬렉션 메타에 반영).
-        # 이미지(CLIP) 임베딩 자체의 재색인은 무거우므로 여기서 하지 않고
-        # scripts/index_products_image.py 로 오프라인 처리한다(메모리 보호).
-        "image_url":    row.get("image_url") or "",
-    }
+    # 3) 배치 임베딩(문서 개수만큼 — 청킹 안 됐으면 1개)
+    embeddings = await embed_service.get_embeddings([d["document"] for d in docs])
 
-    # 4) upsert (id 는 문자열 — 최초 인덱싱 규칙과 일치)
+    # 4) 기존 문서 전부 삭제 후 upsert(delete-then-upsert, 청크 수 변경 대응)
+    await chroma_service.delete_product(pid)
     total = await chroma_service.upsert_products(
-        ids=[str(pid)],
-        embeddings=[embedding],
-        documents=[text],
-        metadatas=[metadata],
+        ids=[d["id"] for d in docs],
+        embeddings=embeddings,
+        documents=[d["document"] for d in docs],
+        metadatas=[d["metadata"] for d in docs],
     )
-    logger.info("상품 재색인 완료: product_id=%s (총 %d건)", pid, total)
+    logger.info("상품 재색인 완료: product_id=%s (청크 %d개, 컬렉션 총 %d건)",
+                pid, len(docs), total)
 
     # [하이브리드] BM25 인덱스도 증분 갱신(플래그 OFF 면 no-op, 실패해도 메인 경로 불방해)
+    # BM25 는 설계상 청킹 대상에서 제외(키워드 빈도 기반이라 전체 문서로도 잘 동작) —
+    # 원본 row 그대로 넘겨 기존 단일 문서 색인 규칙을 유지한다.
     try:
         bm25_service.upsert_one(row)
     except Exception:
