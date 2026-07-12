@@ -1,4 +1,4 @@
-# 쇼핑몰 AI 챗봇 — FastAPI/LangGraph 백엔드
+# Agentic RAG Engine for E-commerce — FastAPI/LangGraph 백엔드
 
 Oracle 기반 쇼핑몰의 AI 챗봇 파이프라인을 전담하는 FastAPI 서버입니다.
 Spring Boot(회원/상품/장바구니/주문, Thymeleaf UI)와 이원화된 구조에서
@@ -7,6 +7,13 @@ Spring Boot(회원/상품/장바구니/주문, Thymeleaf UI)와 이원화된 구
 
 - Spring Boot 저장소: [shoppingmall-spring](https://github.com/blacktaione2/shoppingmall-spring)
 - 4인 팀 프로젝트 중 AI 백엔드(FastAPI) 파트를 담당했습니다.
+
+## 라이브 데모
+
+**https://shoppingmall.duckdns.org**
+
+> 개인 학습/포트폴리오 목적의 데모 서버입니다. 실제 결제는 이뤄지지 않으며,
+> 테스트/시연 편의를 위해 상시 기동 상태는 보장하지 않습니다.
 
 ## 아키텍처
 
